@@ -3,7 +3,7 @@ Main Company Research Agent using DeepAgent Architecture
 Orchestrates multiple specialized sub-agents for comprehensive account planning
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from config.settings import config
@@ -19,7 +19,8 @@ from src.agents.sub_agents import (
     SynergyAgent,
     PricingAgent,
     ROIAgent,
-    AdditionalDataRequestAgent
+    AdditionalDataRequestAgent,
+    invoke_llm_with_fallback  # Import the fallback function
 )
 from src.tools.web_scraper import web_scraper, search_tool
 import logging
@@ -51,7 +52,8 @@ class DeepAgentOrchestrator:
         )
         
         # Initialize Pinecone retriever tool
-        self.retriever_tool = PineconeRetrieverTool(vector_store).get_tool()
+        self.retriever_tool_wrapper = PineconeRetrieverTool(vector_store)
+        self.retriever_tool = self.retriever_tool_wrapper.get_tool()
         
         # Initialize all specialized sub-agents
         self.sub_agents = {
@@ -142,16 +144,16 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
 """
         
         try:
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt)
-            ]
+            # Create prompt as a single string
+            full_prompt = f"""{system_prompt}
+
+User Input: {user_prompt}"""
             
-            response = self.llm.invoke(messages)
-            response_text = response.content.strip()
+            # Use fallback mechanism for API key rotation
+            response_text = invoke_llm_with_fallback(full_prompt).strip()
             
             # Extract JSON from response (handle cases where LLM adds extra text)
-            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
+            json_match = re.search(r'\{[^\{\}]*(?:\{[^\{\}]*\}[^\{\}]*)*\}', response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(0)
                 parsed = json.loads(json_str)
@@ -335,6 +337,17 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
                 'status': 'error'
             }
     
+    def get_retrieved_documents(self) -> Dict[str, List[Dict]]:
+        """Get all documents retrieved during agent execution"""
+        return self.retriever_tool_wrapper.retrieved_docs
+    
+    def reset_retrieved_documents(self):
+        """Reset tracked documents for a new research session"""
+        self.retriever_tool_wrapper.retrieved_docs = {
+            'eightfold': [],
+            'target': []
+        }
+    
     def generate_account_plan(
         self,
         company_name: str,
@@ -343,7 +356,8 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
         references: str = '',
         additional_data_requested: str = '',
         associated_companies: List[str] = None,
-        parallel: bool = True
+        parallel: bool = True,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
         """
         Generate comprehensive account plan for a company
@@ -356,6 +370,7 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
             additional_data_requested: Specific data request for AdditionalDataRequestAgent
             associated_companies: List of associated companies for comparison
             parallel: Whether to run agents in parallel (default: True)
+            progress_callback: Optional callback function for progress updates
         
         Returns:
             Dictionary containing all agent analyses
@@ -434,6 +449,15 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
                             'status': result['status']
                         }
                         logger.info(f"✓ Completed {agent_name}")
+                        
+                        if progress_callback:
+                            progress_callback({
+                                'agent_key': agent_key,
+                                'agent_name': agent_name,
+                                'status': result['status'],
+                                'content': result['content']
+                            })
+                            
                     except Exception as e:
                         logger.error(f"Exception in {agent_name}: {e}")
                         results['analyses'][agent_key] = {
@@ -441,6 +465,14 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
                             'content': f"Error: {str(e)}",
                             'status': 'error'
                         }
+                        
+                        if progress_callback:
+                            progress_callback({
+                                'agent_key': agent_key,
+                                'agent_name': agent_name,
+                                'status': 'error',
+                                'error': str(e)
+                            })
         else:
             # Sequential execution (original behavior)
             logger.info(f"Running {len(agents_to_execute)} agents sequentially...")
@@ -469,6 +501,14 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
                     
                     logger.info(f"✓ Completed {agent_name}")
                     
+                    if progress_callback:
+                        progress_callback({
+                            'agent_key': agent_key,
+                            'agent_name': agent_name,
+                            'status': 'success',
+                            'content': analysis
+                        })
+                    
                 except Exception as e:
                     logger.error(f"Error in {agent_name}: {e}")
                     results['analyses'][agent_key] = {
@@ -476,6 +516,14 @@ Response: {"company_name": "Veritas Cloud", "additional_data_requested": "Partne
                         'content': f"Error: {str(e)}",
                         'status': 'error'
                     }
+                    
+                    if progress_callback:
+                        progress_callback({
+                            'agent_key': agent_key,
+                            'agent_name': agent_name,
+                            'status': 'error',
+                            'error': str(e)
+                        })
         
         return results
     

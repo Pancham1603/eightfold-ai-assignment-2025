@@ -47,8 +47,8 @@
 
         <header class="main-header">
             <div class="logo">
-                <h1>Account Plan Generator</h1>
-                <p>Comprehensive Sales Intelligence Analysis</p>
+                <h1>Company Research Assistant</h1>
+                <p>Account Plan Generator</p>
             </div>
             <div class="header-actions">
                 <button class="btn-primary" id="newResearchBtn">New Research</button>
@@ -81,11 +81,69 @@
                             </div>
                             <div class="stage-status">⏳</div>
                         </div>
+
+                        <div class="stage-extension" id="dataStageExtension" style="display: none;">
+                            <div class="stage-extension-card">
+                                <div class="stage-extension-body">
+                                    <!-- Scraping Progress Section -->
+                                    <div class="scraping-progress" id="scrapingProgress" style="display: none;">
+                                        <h5>Currently Scraping</h5>
+                                        <div class="scraping-item" id="currentScrapingItem">
+                                            <img class="site-favicon" id="scrapingFavicon" src="" alt="favicon">
+                                            <div class="scraping-details">
+                                                <div class="scraping-title" id="scrapingTitle">Loading...</div>
+                                                <div class="scraping-url" id="scrapingUrl">...</div>
+                                                <div class="scraping-description" id="scrapingDescription">Fetching content...</div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Live Sources Section -->
+                                    <div class="sources-progress" id="sourcesProgress" style="display: none;">
+                                        <div class="sources-progress-header">
+                                            <div class="sources-progress-heading">
+                                                <h4>Live Web Sources</h4>
+                                                <span class="sources-progress-count" id="sourcesProgressCount">0 sources</span>
+                                            </div>
+                                            <div class="sources-progress-controls">
+                                                <div class="sources-favicon-stack" id="sourcesFaviconStack">
+                                                    <span class="sources-progress-placeholder">Waiting...</span>
+                                                </div>
+                                                <!-- <button class="sources-expand-btn" id="sourcesExpandBtn" type="button" aria-expanded="false">
+                                                    <span class="sources-expand-label">Expand</span>
+                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                        <polyline points="6 9 12 15 18 9"></polyline>
+                                                    </svg>
+                                                </button> -->
+                                            </div>
+                                        </div>
+                                        <div class="sources-progress-table-container" id="sourcesProgressTableContainer">
+                                            <table class="sources-progress-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Source</th>
+                                                        <th>Domain</th>
+                                                        <th>Summary</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="sourcesProgressTableBody">
+                                                    <tr>
+                                                        <td colspan="3">
+                                                            <p class="sources-progress-placeholder">Waiting for first source...</p>
+                                                        </td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         
                         <div class="stage-item" id="stage-agents" data-status="pending">
                             <div class="stage-details">
                                 <div class="stage-name">Running Agents</div>
-                                <div class="stage-description">8 agents analyzing in parallel</div>
+                                <div class="stage-description">Selected agents analyzing in parallel</div>
                             </div>
                             <div class="stage-status">⏳</div>
                         </div>
@@ -148,7 +206,72 @@
                 </div>
             </div>
 
+            <!-- Agent Selection Modal (shown before research) -->
+            <div class="agent-selection-modal" id="agentSelectionModal" style="display: none;">
+                <div class="modal-overlay" id="agentModalOverlay"></div>
+                <div class="modal-container">
+                    <div class="modal-header">
+                        <h2>Select Research Areas</h2>
+                        <p>Choose which analyses to run for <strong id="agentModalCompanyName"></strong></p>
+                    </div>
+                    <div class="agent-grid">
+                        <div class="agent-card selected" data-agent="overview">
+                            <div class="agent-checkbox">✓</div>
+                            <h3>Company Overview</h3>
+                            <p>Business model, market position, and value opportunities</p>
+                        </div>
+                        <div class="agent-card selected" data-agent="value">
+                            <div class="agent-checkbox">✓</div>
+                            <h3>Product Fit</h3>
+                            <p>Alignment with Eightfold's solutions</p>
+                        </div>
+                        <div class="agent-card selected" data-agent="goals">
+                            <div class="agent-checkbox">✓</div>
+                            <h3>Strategic Goals</h3>
+                            <p>Long-term objectives and initiatives</p>
+                        </div>
+                        <div class="agent-card selected" data-agent="domain">
+                            <div class="agent-checkbox">✓</div>
+                            <h3>Domain Fit</h3>
+                            <p>Department mapping and stakeholders</p>
+                        </div>
+                        <div class="agent-card selected" data-agent="synergy">
+                            <div class="agent-checkbox">✓</div>
+                            <h3>Synergy Opportunities</h3>
+                            <p>Partnership and collaboration potential</p>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <div class="selection-count">
+                            <span id="selectedAgentCount">5</span> areas selected
+                        </div>
+                        <div class="modal-actions">
+                            <button class="btn-secondary" id="cancelAgentSelection">Cancel</button>
+                            <button class="btn-primary" id="confirmAgentSelection">Start Research</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="dashboard" id="dashboard" style="display: none;">
+                <!-- Dashboard Tabs & Actions -->
+                <div class="dashboard-tabs-bar">
+                    <div class="dashboard-tabs">
+                        <button class="tab-btn active" data-tab="analysis">Analysis</button>
+                        <button class="tab-btn" data-tab="sources">Sources</button>
+                    </div>
+                    <button class="btn-regenerate-global" id="globalRegenerateBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="23 4 23 10 17 10"></polyline>
+                            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                        </svg>
+                        Regenerate Multiple Sections
+                    </button>
+                </div>
+                
+                <!-- Analysis Tab (existing dashboard content) -->
+                <div class="tab-content active" id="analysisTab">
+
                 <!-- Additional Data Response (shown when user requested specific analysis) -->
                 <div class="card full-width additional-data-card" id="additionalDataCard" style="display: none;">
                     <div class="card-header highlight">
@@ -165,76 +288,226 @@
                 </div>
                 
                 <div class="dashboard-grid">
-                    <div class="card full-width">
+                    <div class="card full-width" id="overviewCard">
                         <div class="card-header">
-                            <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                                <line x1="9" y1="3" x2="9" y2="21"></line>
-                            </svg>
-                            <h3>Company Overview</h3>
+                            <div class="card-title-group">
+                                <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                    <line x1="9" y1="3" x2="9" y2="21"></line>
+                                </svg>
+                                <h3>Company Overview</h3>
+                            </div>
+                            <button class="btn-regenerate" data-section="overview" title="Regenerate this section">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 4 23 10 17 10"></polyline>
+                                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                                </svg>
+                                Regenerate
+                            </button>
                         </div>
                         <div class="card-content" id="overviewContent">
                             <p class="loading">Loading...</p>
                         </div>
                     </div>
 
-                    <div class="card">
+                    <div class="card" id="valueCard">
                         <div class="card-header">
-                            <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                                <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                            </svg>
-                            <h3>Value Proposition Alignment</h3>
+                            <div class="card-title-group">
+                                <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                                </svg>
+                                <h3>Value Proposition Alignment</h3>
+                            </div>
+                            <button class="btn-regenerate" data-section="value" title="Regenerate this section">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 4 23 10 17 10"></polyline>
+                                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                                </svg>
+                                Regenerate
+                            </button>
                         </div>
                         <div class="card-content" id="valueContent">
                             <p class="loading">Loading...</p>
                         </div>
                     </div>
 
-                    <div class="card">
+                    <div class="card" id="goalsCard">
                         <div class="card-header">
-                            <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <line x1="12" y1="1" x2="12" y2="23"></line>
-                                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-                            </svg>
-                            <h3>Long-term Goals</h3>
+                            <div class="card-title-group">
+                                <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <line x1="12" y1="1" x2="12" y2="23"></line>
+                                    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                </svg>
+                                <h3>Long-term Goals</h3>
+                            </div>
+                            <button class="btn-regenerate" data-section="goals" title="Regenerate this section">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 4 23 10 17 10"></polyline>
+                                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                                </svg>
+                                Regenerate
+                            </button>
                         </div>
                         <div class="card-content" id="goalsContent">
                             <p class="loading">Loading...</p>
                         </div>
                     </div>
 
-                    <div class="card">
+                    <div class="card" id="domainCard">
                         <div class="card-header">
-                            <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
-                                <line x1="4" y1="22" x2="4" y2="15"></line>
-                            </svg>
-                            <h3>Domain Fit</h3>
+                            <div class="card-title-group">
+                                <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
+                                    <line x1="4" y1="22" x2="4" y2="15"></line>
+                                </svg>
+                                <h3>Domain Fit</h3>
+                            </div>
+                            <button class="btn-regenerate" data-section="domain" title="Regenerate this section">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 4 23 10 17 10"></polyline>
+                                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                                </svg>
+                                Regenerate
+                            </button>
                         </div>
                         <div class="card-content" id="domainContent">
                             <p class="loading">Loading...</p>
                         </div>
                     </div>
 
-                    <div class="card">
+                    <div class="card" id="synergyCard">
                         <div class="card-header">
-                            <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                                <circle cx="9" cy="7" r="4"></circle>
-                                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-                            </svg>
-                            <h3>Synergy Opportunities</h3>
+                            <div class="card-title-group">
+                                <svg class="card-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="9" cy="7" r="4"></circle>
+                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                                </svg>
+                                <h3>Synergy Opportunities</h3>
+                            </div>
+                            <button class="btn-regenerate" data-section="synergy" title="Regenerate this section">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 4 23 10 17 10"></polyline>
+                                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                                </svg>
+                                Regenerate
+                            </button>
                         </div>
                         <div class="card-content" id="synergyContent">
                             <p class="loading">Loading...</p>
                         </div>
                     </div>
                 </div>
+                </div>
+                
+                <!-- Sources Tab -->
+                <div class="tab-content" id="sourcesTab" style="display: none;">
+                    <div class="sources-container">
+                        <h2>Research Sources</h2>
+                        <p class="sources-description">All sources used to generate this account plan</p>
+                        
+                        <!-- Eightfold AI Documents -->
+                        <div class="source-category">
+                            <h3>📚 Eightfold AI Knowledge Base</h3>
+                            <div class="source-list" id="eightfoldSources">
+                                <p class="source-placeholder">No sources available</p>
+                            </div>
+                        </div>
+                        
+                        <!-- Target Company Documents -->
+                        <div class="source-category">
+                            <h3>🏢 <span id="targetCompanyName">Target Company</span> Research</h3>
+                            <div class="source-list" id="targetSources">
+                                <p class="source-placeholder">No sources available</p>
+                            </div>
+                        </div>
+                        
+                        <!-- Web Scraped Sources -->
+                        <div class="source-category web-sources">
+                            <div class="source-category-header">
+                                <h3>🌐 Web Sources</h3>
+                                <span class="source-count-badge" id="webSourcesCount">0 entries</span>
+                            </div>
+                            <div class="source-table-holder" id="webSources">
+                                <p class="source-placeholder">No web sources available</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Global Regenerate Modal -->
+                <div class="global-regenerate-modal" id="globalRegenerateModal" style="display: none;">
+                    <div class="modal-overlay"></div>
+                    <div class="modal-container">
+                        <div class="modal-header">
+                            <h2>Regenerate Multiple Sections</h2>
+                            <p>Select sections to regenerate with additional context</p>
+                        </div>
+                        <div class="global-agent-selection">
+                            <h3>Select Sections:</h3>
+                            <div class="global-agent-checkboxes">
+                                <label class="global-agent-checkbox">
+                                    <input type="checkbox" value="overview" checked>
+                                    <span>Company Overview</span>
+                                </label>
+                                <label class="global-agent-checkbox">
+                                    <input type="checkbox" value="value" checked>
+                                    <span>Value Proposition Alignment</span>
+                                </label>
+                                <label class="global-agent-checkbox">
+                                    <input type="checkbox" value="goals" checked>
+                                    <span>Long-term Goals</span>
+                                </label>
+                                <label class="global-agent-checkbox">
+                                    <input type="checkbox" value="domain" checked>
+                                    <span>Domain Fit</span>
+                                </label>
+                                <label class="global-agent-checkbox">
+                                    <input type="checkbox" value="synergy" checked>
+                                    <span>Synergy Opportunities</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="global-context-input">
+                            <h3>Additional Context:</h3>
+                            <textarea id="globalContextTextarea" placeholder="Add context that applies to all selected sections..."></textarea>
+                        </div>
+                        <div class="modal-footer">
+                            <div class="selection-count">
+                                <span id="globalSelectedCount">5</span> sections selected
+                            </div>
+                            <div class="modal-actions">
+                                <button class="btn-secondary" id="cancelGlobalRegenerate">Cancel</button>
+                                <button class="btn-primary" id="confirmGlobalRegenerate">Regenerate Selected</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <div class="plans-list" id="plansList" style="display: none;">
+            <!-- Section Regenerate Modal (tooltip-style) -->
+            <div class="section-regenerate-modal" id="sectionRegenerateModal" style="display: none;">
+                <div class="modal-overlay" id="sectionModalOverlay"></div>
+                <div class="modal-tooltip">
+                    <div class="modal-header">
+                        <h3>Regenerate <span id="sectionRegenerateName"></span></h3>
+                        <button class="modal-close" id="closeSectionRegenerate">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <label for="sectionContextTextarea">Additional Context (Optional)</label>
+                        <textarea id="sectionContextTextarea" placeholder="Add specific requirements or focus areas for this section...
+Example: 'Focus on sustainability initiatives' or 'Include recent acquisitions'"></textarea>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn-secondary" id="cancelSectionRegenerate">Cancel</button>
+                        <button class="btn-primary" id="confirmSectionRegenerate">Regenerate</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="plans-list" id="plansList" style="display: none;">`
                 <div class="plans-header">
                     <h2>Generated Account Plans</h2>
                     <button class="btn-secondary" id="backToDashboard">Back to Dashboard</button>
@@ -243,10 +516,11 @@
                 </div>
             </div>
             
-            <footer class="dashboard-footer">
-                <p>Submitted By <strong>Pancham Agarwal</strong> (pancham1603@gmail.com) for Internship Hiring Assignment Round</p>
-            </footer>
         </main>
+        
+        <footer class="dashboard-footer">
+            <p>Submitted By <strong>Pancham Agarwal</strong> (pancham1603@gmail.com) for Internship Hiring Assignment Round</p>
+        </footer>
     </div>
 
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>

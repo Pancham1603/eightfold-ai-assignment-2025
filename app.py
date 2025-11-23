@@ -4,9 +4,10 @@ Flask application for Company Research Assistant with Multi-Agent Dashboard
 
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import logging
 import json
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -81,6 +82,9 @@ CORS(app)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
+# Create separate namespace for progress updates to avoid interference with chat
+progress_namespace = '/progress'
+
 # Enhanced session tracking
 active_sessions = {}
 # Session structure: {
@@ -93,6 +97,11 @@ active_sessions = {}
 #       'current_agent': str,
 #       'conversation_history': list,  # Chain of Thought: [{'role': 'user'/'assistant', 'content': str, 'timestamp': str}]
 #       'api_key_index': int  # Last successful Gemini API key index for this session
+#       'sources_used': {  # Track all sources used in research
+#           'pinecone_eightfold': [],  # Eightfold AI vector documents
+#           'pinecone_target': [],  # Target company vector documents
+#           'web_scraped': []  # Web links scraped
+#       }
 #   }
 # }
 
@@ -688,6 +697,42 @@ def get_company_data(company_name):
         }), 500
 
 
+@app.route('/api/sources/<session_id>', methods=['GET'])
+def get_session_sources(session_id):
+    """Get sources used in a research session"""
+    try:
+        if session_id in active_sessions:
+            sources = active_sessions[session_id].get('sources_used', {
+                'pinecone_eightfold': [],
+                'pinecone_target': [],
+                'web_scraped': []
+            })
+            
+            # Also get pinecone sources from main_agent if available
+            try:
+                pinecone_sources = main_agent.get_retrieved_documents()
+                sources['pinecone_eightfold'] = pinecone_sources.get('eightfold', [])
+                sources['pinecone_target'] = pinecone_sources.get('target', [])
+            except:
+                pass
+            
+            return jsonify({
+                'success': True,
+                'sources': sources
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Session not found'
+            }), 404
+    except Exception as e:
+        logger.error(f"Error getting sources: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/graph/<company_name>', methods=['GET'])
 def get_company_graph(company_name):
     """Get knowledge graph visualization for a company"""
@@ -810,6 +855,152 @@ def delete_company_data(company_name):
         }), 500
 
 
+# ============================================================================
+# AGENT SELECTION AND REGENERATION API ENDPOINTS
+# ============================================================================
+
+@app.route('/api/research/regenerate', methods=['POST'])
+def regenerate_section():
+    """Regenerate a specific section with additional context"""
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        agent_name = data.get('agent_name')
+        company_name = data.get('company_name')
+        additional_context = data.get('additional_context', '')  # Optional now
+        previous_results = data.get('previous_results', {})
+        
+        if not all([session_id, agent_name, company_name]):
+            return jsonify({
+                'success': False,
+                'error': 'Missing required fields: session_id, agent_name, company_name'
+            }), 400
+        
+        # Map frontend agent names to backend agent keys
+        agent_map = {
+            'overview': 'overview',
+            'value': 'product_fit',
+            'goals': 'goals',
+            'domain': 'dept_mapping',
+            'synergy': 'synergy'
+        }
+        
+        agent_key = agent_map.get(agent_name)
+        if not agent_key:
+            return jsonify({
+                'success': False,
+                'error': f'Invalid agent name: {agent_name}'
+            }), 400
+        
+        logger.info(f"Regenerating {agent_name} for {company_name} with context: {additional_context[:50]}...")
+        
+        # Get the specific agent
+        agent = main_agent.sub_agents.get(agent_key)
+        if not agent:
+            return jsonify({
+                'success': False,
+                'error': f'Agent not found: {agent_key}'
+            }), 500
+        
+        # Prepare enhanced context (only if additional context provided)
+        if additional_context and additional_context.strip():
+            enhanced_context = f"Additional Requirements: {additional_context}\n\nPrevious Analysis Context: Consider improvements based on user feedback."
+        else:
+            enhanced_context = ""  # Empty context = fresh regeneration
+        
+        # Run the specific agent
+        result = agent.analyze(company_name, references=enhanced_context)
+        
+        return jsonify({
+            'success': True,
+            'agent': agent_name,
+            'result': result,
+            'message': f'Regenerated {agent_name} analysis with additional context'
+        })
+    except Exception as e:
+        logger.error(f"Error regenerating section: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/research/regenerate-multiple', methods=['POST'])
+def regenerate_multiple():
+    """Regenerate multiple sections with shared context"""
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        agents = data.get('agents', [])
+        company_name = data.get('company_name')
+        additional_context = data.get('additional_context', '')
+        previous_results = data.get('previous_results', {})
+        
+        if not all([session_id, agents, company_name]):
+            return jsonify({
+                'success': False,
+                'error': 'Missing required fields: session_id, agents, company_name'
+            }), 400
+        
+        # Map frontend agent names to backend agent keys
+        agent_map = {
+            'overview': 'overview',
+            'value': 'product_fit',
+            'goals': 'goals',
+            'domain': 'dept_mapping',
+            'synergy': 'synergy'
+        }
+        
+        logger.info(f"Regenerating {len(agents)} agents for {company_name}: {agents}")
+        
+        # Prepare enhanced context (only if provided)
+        if additional_context and additional_context.strip():
+            enhanced_context = f"Additional Requirements: {additional_context}\n\nPrevious Analysis Context: Consider improvements based on user feedback."
+        else:
+            enhanced_context = ""  # Empty context = fresh regeneration
+        
+        results = {}
+        for agent_name in agents:
+            agent_key = agent_map.get(agent_name)
+            if not agent_key:
+                logger.warning(f"Skipping invalid agent: {agent_name}")
+                continue
+            
+            agent = main_agent.sub_agents.get(agent_key)
+            if not agent:
+                logger.warning(f"Agent not found: {agent_key}")
+                continue
+            
+            try:
+                # Run agent with enhanced context
+                result = agent.analyze(company_name, references=enhanced_context)
+                results[agent_name] = result
+                logger.info(f"✓ Regenerated {agent_name}")
+            except Exception as e:
+                logger.error(f"Error regenerating {agent_name}: {e}")
+                results[agent_name] = f"Error: {str(e)}"
+        
+        return jsonify({
+            'success': True,
+            'results': results,
+            'message': f'Regenerated {len(results)} sections successfully'
+        })
+    except Exception as e:
+        logger.error(f"Error regenerating multiple sections: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+# ============================================================================
+# WEBSOCKET HANDLERS
+# ============================================================================
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
@@ -823,7 +1014,13 @@ def handle_connect():
         'research_results': {},
         'associated_companies': [],
         'current_agent': None,
-        'conversation_history': []
+        'conversation_history': [],
+        'progress_sid': None,
+        'sources_used': {
+            'pinecone_eightfold': [],
+            'pinecone_target': [],
+            'web_scraped': []
+        }
     }
     
     # Don't send initial message to chat
@@ -833,11 +1030,53 @@ def handle_connect():
     # })
 
 
+@socketio.on('connect', namespace=progress_namespace)
+def handle_progress_connect():
+    """Handle progress namespace connection"""
+    logger.info(f"Progress channel connected: {request.sid}")
+
+
+@socketio.on('register_session', namespace=progress_namespace)
+def register_progress_session(data):
+    """Map progress namespace connection to main session room"""
+    main_sid = data.get('main_sid') if data else None
+    progress_sid = request.sid
+
+    if not main_sid:
+        emit('error', {'message': 'Missing main session identifier'})
+        return
+
+    if main_sid not in active_sessions:
+        emit('error', {'message': 'Session not found for progress channel'})
+        return
+
+    join_room(main_sid, sid=progress_sid, namespace=progress_namespace)
+    active_sessions[main_sid]['progress_sid'] = progress_sid
+    logger.info(f"Registered progress channel {progress_sid} for session {main_sid}")
+    emit('progress_registered', {'success': True, 'room': main_sid})
+
+
+@socketio.on('disconnect', namespace=progress_namespace)
+def handle_progress_disconnect():
+    """Cleanup progress namespace mapping"""
+    progress_sid = request.sid
+    logger.info(f"Progress channel disconnected: {progress_sid}")
+
+    for session_id, session_data in active_sessions.items():
+        if session_data.get('progress_sid') == progress_sid:
+            leave_room(session_id, sid=progress_sid, namespace=progress_namespace)
+            session_data['progress_sid'] = None
+            break
+
+
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
     logger.info(f"Client disconnected: {request.sid}")
     if request.sid in active_sessions:
+        progress_sid = active_sessions[request.sid].get('progress_sid')
+        if progress_sid:
+            leave_room(request.sid, sid=progress_sid, namespace=progress_namespace)
         del active_sessions[request.sid]
 
 
@@ -845,22 +1084,30 @@ def handle_disconnect():
 def handle_research_company(data):
     """Handle company research request with multi-agent system"""
     session_id = request.sid
+    
+    # Start in background thread for non-blocking execution
+    socketio.start_background_task(run_research_in_background, session_id, data)
+
+def run_research_in_background(session_id, data):
+    """Run research in background to allow real-time progress updates"""
     user_prompt = data.get('company_name', '').strip()  # Can be company name or full prompt
     gather_data = data.get('gather_data', True)
+    selected_agents = data.get('selected_agents', None)  # Agent selection from modal
     
     if not user_prompt:
-        emit('error', {'message': 'Company name or prompt is required'})
+        socketio.emit('error', {'message': 'Company name or prompt is required'}, namespace=progress_namespace, room=session_id)
         return
     
-    logger.info(f"Multi-agent research request with prompt: {user_prompt[:100]}...")
+    logger.info(f"Multi-agent research request (background) with prompt: {user_prompt[:100]}...")
     
     # Step 0: Process prompt through Gemini to extract structured information
-    emit('progress_update', {
+    socketio.emit('progress_update', {
         'step': 'prompt_processing',
         'message': '🤖 Processing your request...',
         'details': 'Analyzing prompt and extracting key information',
         'progress': 5
-    })
+    }, namespace=progress_namespace, room=session_id)
+    socketio.sleep(0.01)  # Flush the emit
     
     try:
         prompt_data = main_agent.process_prompt(user_prompt)
@@ -915,12 +1162,13 @@ def handle_research_company(data):
         if additional_data_requested:
             additional_context += f"Additional Analysis Requested: {additional_data_requested}\n\n"
         
-        emit('progress_update', {
+        socketio.emit('progress_update', {
             'step': 'prompt_processed',
             'message': f'✓ Identified primary company: {company_name}',
             'details': user_type_messages.get(user_type, user_type_messages['standard']),
             'progress': 10
-        })
+        }, namespace=progress_namespace, room=session_id)
+        socketio.sleep(0.01)  # Flush the emit
         
     except Exception as e:
         logger.error(f"Error processing prompt: {e}")
@@ -941,54 +1189,129 @@ def handle_research_company(data):
         'current_agent': None,
         'associated_companies': associated_companies,
         'research_done': False,
-        'research_results': {}
+        'research_results': {},
+        'selected_agents': selected_agents if selected_agents else ['overview', 'value', 'goals', 'domain', 'synergy'],
+        'sources_used': {
+            'pinecone_eightfold': [],
+            'pinecone_target': [],
+            'web_scraped': []
+        }
     })
+
+    def emit_sources_update():
+        """Emit the latest sources list to the frontend"""
+        try:
+            session_sources = active_sessions.get(session_id, {}).get('sources_used')
+            if session_sources is not None:
+                socketio.emit('sources_data', session_sources, room=session_id)
+        except Exception as e:
+            logger.error(f"Error emitting sources data: {e}")
+    
+    # Set up scraping callback to emit progress
+    def scraping_callback(scrape_data):
+        """Callback to emit scraping progress to frontend"""
+        try:
+            logger.info(f"Scraping callback invoked for: {scrape_data.get('url', 'unknown')}")
+            
+            # Ensure session exists and has sources_used structure
+            if session_id in active_sessions:
+                if 'sources_used' not in active_sessions[session_id]:
+                    active_sessions[session_id]['sources_used'] = {
+                        'pinecone_eightfold': [],
+                        'pinecone_target': [],
+                        'web_scraped': []
+                    }
+                
+                # Add to sources_used (only success and cached)
+                if scrape_data['status'] in ['success', 'cached']:
+                    # Check for duplicates
+                    existing_urls = [s['url'] for s in active_sessions[session_id]['sources_used']['web_scraped']]
+                    if scrape_data['url'] not in existing_urls:
+                        active_sessions[session_id]['sources_used']['web_scraped'].append({
+                            'url': scrape_data['url'],
+                            'title': scrape_data['title'],
+                            'description': scrape_data['description'],
+                            'domain': scrape_data['domain']
+                        })
+                        logger.info(f"Added web source: {scrape_data['url']} (total: {len(active_sessions[session_id]['sources_used']['web_scraped'])})")
+                        emit_sources_update()
+            
+            # Emit to frontend using socketio
+            socketio.emit('scraping_progress', {
+                'url': scrape_data['url'],
+                'domain': scrape_data['domain'],
+                'title': scrape_data['title'],
+                'description': scrape_data['description'],
+                'status': scrape_data['status']
+            }, namespace=progress_namespace, room=session_id)
+            socketio.sleep(0.01)  # Flush the emit
+            logger.info(f"Emitted scraping progress for: {scrape_data['url']}")
+        except Exception as e:
+            logger.error(f"Error in scraping callback: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Register callback with web scraper
+    from src.tools.web_scraper import web_scraper, search_tool
+    web_scraper.set_scraping_callback(scraping_callback)
+    web_scraper.current_company = company_name  # Set current company for callback context
+    if hasattr(search_tool, 'scraper'):
+        search_tool.scraper.set_scraping_callback(scraping_callback)
+        search_tool.scraper.current_company = company_name
+    logger.info(
+        f"Scraping callback registered for {company_name}, web_scraper set: {web_scraper.scraping_callback is not None}, "
+        f"search_tool scraper set: {getattr(search_tool.scraper, 'scraping_callback', None) is not None}"
+    )
     
     # Send acknowledgment (only to progress screen, not chat)
-    emit('research_started', {
+    socketio.emit('research_started', {
         'company_name': company_name,
         'message': f'Starting comprehensive analysis for {company_name}...',
         'associated_companies': associated_companies
-    })
+    }, room=session_id)
     
     try:
         # Step 1: Gather company data if requested
         if gather_data:
             # Gather data for primary company
-            emit('progress_update', {
+            socketio.emit('progress_update', {
                 'step': 'data_gathering',
-                'message': f'🔍 Gathering data for {company_name}...',
+                'message': f'Gathering data for {company_name}...',
                 'details': 'Searching web and scraping company website',
                 'progress': 15
-            })
+            }, namespace=progress_namespace, room=session_id)
+            socketio.sleep(0.01)  # Flush the emit
             
             data_stats = main_agent.gather_company_data(company_name, additional_context)
             
             # Different message based on whether we used existing or new data
             if data_stats.get('used_existing_data'):
-                emit('progress_update', {
+                socketio.emit('progress_update', {
                     'step': 'data_gathered',
                     'message': f'✓ Using existing data: {data_stats.get("total_documents", 0)} documents (quality: {data_stats.get("quality_score", 0):.0%})',
                     'details': 'Sufficient high-quality data found in knowledge base',
                     'progress': 25
-                })
+                }, namespace=progress_namespace, room=session_id)
+                socketio.sleep(0.01)  # Flush the emit
             else:
-                emit('progress_update', {
+                socketio.emit('progress_update', {
                     'step': 'data_gathered',
                     'message': f'✓ Fresh data gathered: {data_stats.get("total_documents", 0)} documents',
                     'details': f'Search results: {data_stats.get("search_results", 0)}, Website pages: {data_stats.get("website_pages", 0)}',
                     'progress': 25
-                })
+                }, namespace=progress_namespace, room=session_id)
+                socketio.sleep(0.01)  # Flush the emit
             
             # Gather data for associated companies (for comparison/context)
             if associated_companies:
                 for idx, assoc_company in enumerate(associated_companies):
-                    emit('progress_update', {
+                    socketio.emit('progress_update', {
                         'step': f'associated_data_gathering_{idx}',
-                        'message': f'🔍 Gathering comparison data for {assoc_company}...',
+                        'message': f'Gathering comparison data for {assoc_company}...',
                         'details': 'Building knowledge graph for multi-company analysis',
                         'progress': 25 + (idx + 1) * (15 // len(associated_companies))
-                    })
+                    }, namespace=progress_namespace, room=session_id)
+                    socketio.sleep(0.01)  # Flush the emit
                     
                     try:
                         assoc_stats = main_agent.gather_company_data(assoc_company)
@@ -1001,33 +1324,48 @@ def handle_research_company(data):
                     except Exception as e:
                         logger.error(f"Error gathering data for {assoc_company}: {e}")
                 
-                emit('progress_update', {
+                socketio.emit('progress_update', {
                     'step': 'all_data_gathered',
                     'message': f'✓ All company data gathered',
                     'details': f'Primary: {company_name}, Comparisons: {len(associated_companies)}',
                     'progress': 40
-                })
+                }, namespace=progress_namespace, room=session_id)
+                socketio.sleep(0.01)  # Flush the emit
         
         # Step 2: Run agents in parallel
-        agent_count = 8 if additional_data_requested else 7
-        emit('progress_update', {
+        # Determine which agents to run based on selection or additional data request
+        agents_to_run = None
+        if selected_agents:
+            # Map frontend keys to backend agent keys
+            agent_key_map = {
+                'overview': 'overview',
+                'value': 'product_fit',
+                'goals': 'goals',
+                'domain': 'dept_mapping',
+                'synergy': 'synergy'
+            }
+            agents_to_run = [agent_key_map.get(key, key) for key in selected_agents]
+            # Add additional_data agent if there's a specific request
+            if additional_data_requested and additional_data_requested.strip():
+                if 'additional_data' not in agents_to_run:
+                    agents_to_run.append('additional_data')
+        elif additional_data_requested and additional_data_requested.strip():
+            # Include additional_data agent when specific request is made
+            agents_to_run = ['overview', 'product_fit', 'goals', 'dept_mapping', 'synergy', 'additional_data']
+        
+        agent_count = len(agents_to_run) if agents_to_run else 7
+        socketio.emit('progress_update', {
             'step': 'agents_starting',
-            'message': f'🚀 Running all {agent_count} agents in parallel...',
+            'message': f'Running {agent_count} selected agents in parallel...',
             'details': 'Parallel execution for faster results' + (' (including custom data request)' if additional_data_requested else ''),
             'progress': 45
-        })
+        }, namespace=progress_namespace, room=session_id)
+        socketio.sleep(0.01)  # Flush the emit
         
-        # Use the orchestrator's parallel execution
-        results = main_agent.generate_account_plan(
-            company_name=company_name,
-            gather_data=False,  # Already gathered above
-            references=references_given,
-            additional_data_requested=additional_data_requested,
-            associated_companies=associated_companies,
-            parallel=True
-        )
+        # Reset retriever's document tracking for this session
+        main_agent.reset_retrieved_documents()
         
-        # Send progress updates as agents complete
+        # Define progress callback
         agent_names = {
             'overview': ('Company Overview Agent', '🏢'),
             'product_fit': ('Product Fit Agent', '🎯'),
@@ -1039,28 +1377,57 @@ def handle_research_company(data):
             'additional_data': ('Additional Data Request Agent', '📋')
         }
         
-        completed_count = len([a for a in results['analyses'].values() if a['status'] == 'success'])
-        total_agents = len(results['analyses'])
+        completed_agents = set()
+        total_agents_count = agent_count
         
-        for agent_key, analysis in results['analyses'].items():
-            if agent_key in agent_names:
+        def agent_progress_callback(data):
+            agent_key = data.get('agent_key')
+            status = data.get('status')
+            
+            if agent_key in agent_names and agent_key not in completed_agents:
+                completed_agents.add(agent_key)
                 agent_name, icon = agent_names[agent_key]
-                status_icon = '✓' if analysis['status'] == 'success' else '✗'
-                emit('progress_update', {
+                status_icon = '✓' if status == 'success' else '✗'
+                
+                # Calculate progress
+                completed_count = len(completed_agents)
+                current_progress = 45 + int((completed_count / total_agents_count) * 45)
+                
+                logger.info(f"Emitting progress for {agent_key}...")
+                socketio.emit('progress_update', {
                     'step': f'agent_{agent_key}_complete',
                     'message': f'{status_icon} {agent_name} completed',
-                    'details': f'{completed_count}/{total_agents} agents finished',
-                    'progress': 45 + int((completed_count / total_agents) * 45)
-                })
+                    'details': f'{completed_count}/{total_agents_count} agents finished',
+                    'progress': current_progress
+                }, namespace=progress_namespace, room=session_id)
+                socketio.sleep(0)  # Yield to allow emit to flush
+
+        # Use the orchestrator's parallel execution
+        results = main_agent.generate_account_plan(
+            company_name=company_name,
+            gather_data=False,  # Already gathered above
+            agents_to_run=agents_to_run,
+            references=references_given,
+            additional_data_requested=additional_data_requested,
+            associated_companies=associated_companies,
+            parallel=True,
+            progress_callback=agent_progress_callback
+        )
         
-        emit('progress_update', {
+        socketio.emit('progress_update', {
             'step': 'finalizing',
             'message': '✨ Finalizing account plan...',
+            'details': 'Generating comprehensive dashboard and saving results',
             'progress': 95
-        })
+        }, namespace=progress_namespace, room=session_id)
+        socketio.sleep(0.01)  # Flush the emit
         
         json_content = dashboard.generate_json(results)
         html_content = dashboard.generate_html(results)
+        
+        # Get selected agents from session or data
+        session_data = active_sessions.get(session_id, {})
+        selected_agents_from_session = session_data.get('selected_agents', [])
         
         # Transform results to match frontend expectations
         frontend_plan = {
@@ -1074,6 +1441,8 @@ def handle_research_company(data):
             'pricing_recommendation': results['analyses'].get('pricing', {}).get('content', ''),
             'roi_forecast': results['analyses'].get('roi', {}).get('content', ''),
             'additional_data': results['analyses'].get('additional_data', {}).get('content', ''),
+            'selected_agents': selected_agents_from_session,  # Include selected agents
+            'sources_used': {},  # Will be populated below
             'metadata': {
                 'additional_data_requested': additional_data_requested,
                 'references_given': references_given,
@@ -1082,7 +1451,43 @@ def handle_research_company(data):
             }
         }
         
-        emit('research_complete', {
+        # Step 7: Collect all sources used during research
+        logger.info("Collecting sources used during research...")
+        
+        # Get documents retrieved during agent execution
+        pinecone_sources = main_agent.get_retrieved_documents()
+        logger.info(f"Retrieved tracked documents - Eightfold: {len(pinecone_sources['eightfold'])}, Target: {len(pinecone_sources['target'])}")
+        
+        # Get web scraped sources from session
+        web_scraped_sources = []
+        if session_id in active_sessions:
+            web_scraped_sources = active_sessions[session_id].get('sources_used', {}).get('web_scraped', [])
+            logger.info(f"Retrieved {len(web_scraped_sources)} web sources from session")
+        
+        # Add sources to frontend_plan
+        frontend_plan['sources_used'] = {
+            'pinecone_eightfold': pinecone_sources['eightfold'],
+            'pinecone_target': pinecone_sources['target'],
+            'web_scraped': web_scraped_sources
+        }
+        
+        logger.info(f"Sources summary - Eightfold: {len(pinecone_sources['eightfold'])}, Target: {len(pinecone_sources['target'])}, Web: {len(web_scraped_sources)}")
+        
+        # Emit sources data separately to ensure frontend receives it
+        socketio.emit('sources_data', frontend_plan['sources_used'], room=session_id)
+        socketio.sleep(0.01)  # Flush the emit
+        logger.info(f"Emitted sources_data to session {session_id}")
+        
+        # Final progress update showing completion
+        socketio.emit('progress_update', {
+            'step': 'complete',
+            'message': 'Research Complete!',
+            'details': 'Account plan generated successfully',
+            'progress': 100
+        }, namespace=progress_namespace, room=session_id)
+        socketio.sleep(0.01)  # Flush the emit
+        
+        socketio.emit('research_complete', {
             'company_name': company_name,
             'success': True,
             'plan': frontend_plan,
@@ -1092,7 +1497,7 @@ def handle_research_company(data):
                 'json': json_content,
                 'html': html_content
             }
-        })
+        }, room=session_id)
         
         # Update session with research results
         if session_id in active_sessions:
@@ -1107,9 +1512,18 @@ def handle_research_company(data):
         import traceback
         traceback.print_exc()
         
-        emit('error', {
+        # Emit error progress update
+        socketio.emit('progress_update', {
+            'step': 'error',
+            'message': '❌ Error Occurred',
+            'details': str(e),
+            'progress': 0
+        }, namespace=progress_namespace, room=session_id)
+        socketio.sleep(0.01)  # Flush the emit
+        
+        socketio.emit('error', {
             'message': f'Error researching {company_name}: {str(e)}'
-        })
+        }, namespace=progress_namespace, room=session_id)
         
         if session_id in active_sessions:
             active_sessions[session_id]['status'] = 'error'
@@ -1223,39 +1637,40 @@ Respond with ONLY the company name, nothing else."""
             # Create user-type-adapted acknowledgment
             if user_type == 'funny':
                 # For funny/playful users, match their energy with a light observation
-                ack_message = f"That's a fun observation! Let's see what {company_mention} is all about. I'll check for recent updates and explore their business strategy."
+                ack_message = f"That's a fun observation! Let's see what {company_mention} is all about. Please select which areas you'd like me to analyze."
             elif user_type == 'chatty':
                 # For chatty users (but not funny), be warm but professional
-                ack_message = f"Sounds good! Let me research {company_mention} and see how they could benefit from Eightfold's solutions."
+                ack_message = f"Sounds good! Let me research {company_mention}. First, please select which research areas you'd like."
             elif user_type == 'efficient':
                 # For efficient users, be direct and concise
-                ack_message = f"Understood. Fetching current data on {company_mention} and aligning it with Eightfold's products."
+                ack_message = f"Understood. Select research areas for {company_mention}."
             elif user_type == 'uncertain':
                 # For uncertain users, be reassuring
-                ack_message = f"Got it! I'll look into {company_mention} and analyze how Eightfold's products could help them."
+                ack_message = f"Got it! I'll analyze {company_mention}. Please choose which areas to focus on."
             else:
                 # Standard acknowledgment
-                ack_message = f"Great! Let me research {company_mention} and prepare a comprehensive analysis."
+                ack_message = f"Great! I'll research {company_mention}. Please select which areas you'd like me to analyze."
             
-            # Add acknowledgment to conversation history
-            session_data['conversation_history'].append({
-                'role': 'assistant',
-                'content': ack_message,
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            # Send chat response to user BEFORE starting research
-            emit('chat_response', {
-                'message': ack_message,
-                'type': 'research_acknowledgment',
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            # Trigger full research using processed message with Eightfold AI context
-            handle_research_company({
+            # Store company name for when user confirms agent selection
+            # Don't send chat message yet - will send after agent selection
+            session_data['pending_research'] = {
                 'company_name': processed_message,
-                'gather_data': True
+                'company_mention': company_mention,
+                'ack_message': ack_message,  # Store for later
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Send flag to show agent selection modal (no chat message)
+            emit('chat_response', {
+                'message': '',  # No message in chat yet
+                'type': 'research_acknowledgment',
+                'show_agent_selection': True,
+                'company_name': company_mention,
+                'timestamp': datetime.now().isoformat()
             })
+            
+            # DON'T trigger research yet - wait for agent selection confirmation
+            # handle_research_company will be called from a new endpoint
             
         elif classification['type'] == 'follow_up':
             # Handle follow-up question using processed message (show typing indicator only)
@@ -1270,8 +1685,8 @@ Respond with ONLY the company name, nothing else."""
             })
             
             source_label = {
-                'cached': '💾 From research data',
-                'additional_agent': '🌐 Fresh from web search',
+                'cached': 'From research data',
+                'additional_agent': 'Fresh from web search',
                 'error': '⚠️ Error'
             }.get(result['source'], '')
             
@@ -1338,7 +1753,13 @@ def handle_new_session():
         'associated_companies': [],
         'current_agent': None,
         'conversation_history': [],  # Fresh conversation chain
-        'api_key_index': 0  # Reset to first key on new session
+        'progress_sid': None,
+        'api_key_index': 0,  # Reset to first key on new session
+        'sources_used': {
+            'pinecone_eightfold': [],
+            'pinecone_target': [],
+            'web_scraped': []
+        }
     }
     
     emit('session_reset', {
@@ -1353,6 +1774,57 @@ def handle_new_session():
     #     'type': 'system',
     #     'timestamp': datetime.now().isoformat()
     # })
+
+
+@socketio.on('confirm_agent_selection')
+def handle_confirm_agent_selection(data):
+    """Handle confirmed agent selection and start research"""
+    session_id = request.sid
+    selected_agents = data.get('selected_agents', [])
+    
+    if session_id not in active_sessions:
+        socketio.emit('error', {'message': 'Session not found'}, namespace=progress_namespace, room=session_id)
+        return
+    
+    session_data = active_sessions[session_id]
+    pending = session_data.get('pending_research')
+    
+    if not pending:
+        socketio.emit('error', {'message': 'No pending research found'}, namespace=progress_namespace, room=session_id)
+        return
+    
+    company_name = pending['company_name']
+    company_mention = pending['company_mention']
+    ack_message = pending.get('ack_message', f"Great! Let me research {company_mention} and prepare a comprehensive analysis.")
+    
+    logger.info(f"Starting research for {company_mention} with selected agents: {selected_agents}")
+    
+    # Add acknowledgment to conversation history (the original one)
+    session_data['conversation_history'].append({
+        'role': 'assistant',
+        'content': ack_message,
+        'timestamp': datetime.now().isoformat()
+    })
+    
+    # Send ONLY the original acknowledgment chat message
+    emit('chat_response', {
+        'message': ack_message,
+        'type': 'research_acknowledgment',
+        'timestamp': datetime.now().isoformat()
+    })
+    
+    # Clear pending research
+    session_data.pop('pending_research', None)
+    
+    # Store selected agents in session for filtering and future regeneration
+    session_data['selected_agents'] = selected_agents
+    
+    # Trigger research with selected agents
+    handle_research_company({
+        'company_name': company_name,
+        'gather_data': True,
+        'selected_agents': selected_agents
+    })
 
 
 if __name__ == '__main__':

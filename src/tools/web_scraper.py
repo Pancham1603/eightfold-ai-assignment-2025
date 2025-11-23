@@ -37,6 +37,11 @@ class CompanyWebScraper:
         }
         self.cache_enabled = True
         self.current_company = None
+        self.scraping_callback = None  # Callback to emit scraping progress
+    
+    def set_scraping_callback(self, callback):
+        """Set callback function to emit scraping progress"""
+        self.scraping_callback = callback
     
     def _log_scraping_activity(self, company_name: str, url: str, status: str, details: str = ''):
         """Log scraping activity for a specific company"""
@@ -178,9 +183,30 @@ class CompanyWebScraper:
         # Check cache first
         cached = self._get_cached(url)
         if cached:
+            # Emit scraping progress even for cached results
+            if self.scraping_callback and self.current_company:
+                domain = urlparse(url).netloc
+                self.scraping_callback({
+                    'url': url,
+                    'domain': domain,
+                    'title': cached.get('title', ''),
+                    'description': cached.get('text', '')[:150] + '...',
+                    'status': 'cached'
+                })
             return cached
         
         try:
+            # Emit scraping progress - starting
+            if self.scraping_callback and self.current_company:
+                domain = urlparse(url).netloc
+                self.scraping_callback({
+                    'url': url,
+                    'domain': domain,
+                    'title': 'Loading...',
+                    'description': 'Fetching content...',
+                    'status': 'scraping'
+                })
+            
             response = requests.get(url, headers=self.headers, timeout=self.timeout)
             response.raise_for_status()
             
@@ -194,6 +220,10 @@ class CompanyWebScraper:
             title = soup.find('title')
             title_text = title.get_text().strip() if title else ''
             
+            # Get meta description
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            description = meta_desc.get('content', '') if meta_desc else ''
+            
             # Get main content
             text = soup.get_text()
             lines = (line.strip() for line in text.splitlines())
@@ -203,8 +233,20 @@ class CompanyWebScraper:
             result = {
                 'text': text[:5000],  # Limit to 5000 chars per page
                 'title': title_text,
-                'url': url
+                'url': url,
+                'description': description or text[:150]
             }
+            
+            # Emit scraping progress - completed
+            if self.scraping_callback and self.current_company:
+                domain = urlparse(url).netloc
+                self.scraping_callback({
+                    'url': url,
+                    'domain': domain,
+                    'title': title_text or domain,
+                    'description': (description or text[:150]) + '...',
+                    'status': 'success'
+                })
             
             # Cache the result
             self._set_cache(url, result)
@@ -213,16 +255,49 @@ class CompanyWebScraper:
             
         except Exception as e:
             logger.error(f"Error scraping {url}: {e}")
+            # Emit scraping progress - error
+            if self.scraping_callback and self.current_company:
+                domain = urlparse(url).netloc
+                self.scraping_callback({
+                    'url': url,
+                    'domain': domain,
+                    'title': domain,
+                    'description': f'Error: {str(e)[:100]}',
+                    'status': 'error'
+                })
             return None
     
     async def _scrape_url_async(self, session: aiohttp.ClientSession, url: str) -> Optional[Dict[str, Any]]:
         """Async scrape a single URL with caching"""
+        from urllib.parse import urlparse
+        
+        domain = urlparse(url).netloc
+        
         # Check cache first
         cached = self._get_cached(url)
         if cached:
+            # Emit scraping progress even for cached results
+            if self.scraping_callback and self.current_company:
+                self.scraping_callback({
+                    'url': url,
+                    'domain': domain,
+                    'title': cached.get('title', domain),
+                    'description': cached.get('description', cached.get('text', ''))[:150],
+                    'status': 'cached'
+                })
             return cached
         
         try:
+            # Emit scraping progress - starting
+            if self.scraping_callback and self.current_company:
+                self.scraping_callback({
+                    'url': url,
+                    'domain': domain,
+                    'title': 'Loading...',
+                    'description': 'Fetching content...',
+                    'status': 'scraping'
+                })
+            
             async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
                 if response.status != 200:
                     logger.warning(f"HTTP {response.status} for {url}")
@@ -239,6 +314,10 @@ class CompanyWebScraper:
                 title = soup.find('title')
                 title_text = title.get_text().strip() if title else ''
                 
+                # Get meta description
+                meta_desc = soup.find('meta', attrs={'name': 'description'})
+                description = meta_desc.get('content', '') if meta_desc else ''
+                
                 # Get main content
                 text = soup.get_text()
                 lines = (line.strip() for line in text.splitlines())
@@ -248,8 +327,19 @@ class CompanyWebScraper:
                 result = {
                     'text': text[:5000],
                     'title': title_text,
-                    'url': url
+                    'url': url,
+                    'description': description or text[:150]
                 }
+                
+                # Emit scraping progress - completed
+                if self.scraping_callback and self.current_company:
+                    self.scraping_callback({
+                        'url': url,
+                        'domain': domain,
+                        'title': title_text or domain,
+                        'description': (description or text[:150]),
+                        'status': 'success'
+                    })
                 
                 # Cache the result
                 self._set_cache(url, result)
@@ -258,6 +348,15 @@ class CompanyWebScraper:
                 
         except Exception as e:
             logger.error(f"Async scraping error for {url}: {e}")
+            # Emit scraping progress - error
+            if self.scraping_callback and self.current_company:
+                self.scraping_callback({
+                    'url': url,
+                    'domain': domain,
+                    'title': 'Error',
+                    'description': f'Failed to scrape: {str(e)[:100]}',
+                    'status': 'error'
+                })
             return None
     
     async def scrape_urls_async(self, urls: List[str]) -> List[Dict[str, Any]]:

@@ -18,6 +18,71 @@ except ImportError:
     search_tool = None
     logger.warning("Web scraper not available for agents")
 
+# Global variable to track last successful API key index
+_last_successful_key_index = 0
+
+
+def invoke_llm_with_fallback(prompt: str, max_retries: int = None) -> str:
+    """
+    Invoke Gemini with automatic key fallback on errors.
+    Remembers the last successful key and tries it first for future requests.
+    
+    Args:
+        prompt: The prompt to send to the LLM
+        max_retries: Maximum number of API keys to try (default: all available keys)
+    
+    Returns:
+        LLM response content
+    """
+    global _last_successful_key_index
+    
+    if not config.GOOGLE_API_KEYS:
+        raise ValueError("No Google API keys configured")
+    
+    if max_retries is None:
+        max_retries = len(config.GOOGLE_API_KEYS)
+    
+    last_error = None
+    
+    # Create ordered list of keys to try: start with last successful, then others
+    num_keys = len(config.GOOGLE_API_KEYS)
+    key_indices_to_try = [_last_successful_key_index]
+    
+    # Add all other indices in order
+    for i in range(num_keys):
+        if i != _last_successful_key_index:
+            key_indices_to_try.append(i)
+    
+    # Limit to max_retries
+    key_indices_to_try = key_indices_to_try[:max_retries]
+    
+    for attempt, api_key_index in enumerate(key_indices_to_try):
+        api_key = config.GOOGLE_API_KEYS[api_key_index]
+        
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model=config.GEMINI_MODEL,
+                google_api_key=api_key,
+                temperature=0.7
+            )
+            response = llm.invoke(prompt)
+            
+            # Update last successful key index
+            _last_successful_key_index = api_key_index
+            
+            logger.info(f"Successfully used API key {api_key_index + 1} (marked as preferred for next request)")
+            return response.content
+        except Exception as e:
+            last_error = e
+            logger.warning(f"API key {api_key_index + 1} failed: {e}")
+            if attempt < len(key_indices_to_try) - 1:
+                next_key_index = key_indices_to_try[attempt + 1]
+                logger.info(f"Trying next API key ({next_key_index + 1})...")
+                continue
+    
+    logger.error(f"All API keys exhausted. Last error: {last_error}")
+    raise last_error
+
 
 class PineconeRetrieverTool:
     """Tool for retrieving context from Pinecone vector store"""
@@ -30,10 +95,15 @@ class PineconeRetrieverTool:
             vector_store: PineconeGraphRAGStore instance
         """
         self.vector_store = vector_store
+        self.retrieved_docs = {
+            'eightfold': [],
+            'target': []
+        }
     
     def get_tool(self):
         """Get the LangChain tool for Pinecone retrieval"""
         vector_store = self.vector_store
+        retrieved_docs = self.retrieved_docs
         
         @tool
         def pinecone_retriever(query: str, company_name: str, include_eightfold: bool = True) -> str:
@@ -57,6 +127,33 @@ class PineconeRetrieverTool:
                         company_docs=5,
                         eightfold_docs=3
                     )
+                    
+                    # Track retrieved documents
+                    for idx, doc in enumerate(results.get('eightfold_docs', [])):
+                        doc_info = {
+                            'title': doc.metadata.get('title', doc.metadata.get('source', 'Eightfold Document')),
+                            'text': doc.page_content[:200] + '...',
+                            'source': doc.metadata.get('source', 'Vector Store'),
+                            'document_type': doc.metadata.get('document_type', 'reference'),
+                            'score': 1.0 - (idx * 0.1),  # Simulated relevance
+                            'query': query
+                        }
+                        # Avoid duplicates
+                        if not any(d['title'] == doc_info['title'] for d in retrieved_docs['eightfold']):
+                            retrieved_docs['eightfold'].append(doc_info)
+                    
+                    for idx, doc in enumerate(results.get('company_docs', [])):
+                        doc_info = {
+                            'title': doc.metadata.get('title', doc.metadata.get('source', f'{company_name} Document')),
+                            'text': doc.page_content[:200] + '...',
+                            'source': doc.metadata.get('source', 'Vector Store'),
+                            'url': doc.metadata.get('url', ''),
+                            'score': 1.0 - (idx * 0.1),  # Simulated relevance
+                            'query': query
+                        }
+                        # Avoid duplicates
+                        if not any(d['title'] == doc_info['title'] for d in retrieved_docs['target']):
+                            retrieved_docs['target'].append(doc_info)
                     
                     context = f"""
 === TARGET COMPANY: {company_name} ===
@@ -143,15 +240,15 @@ Retrieved Context:
             if references:
                 context += f"\n\n=== USER PROVIDED REFERENCES ===\n{references}"
             
-            # Generate analysis
+            # Generate analysis with API key fallback
             prompt = self.PROMPT.format(company_name=company_name, context=context)
-            response = self.llm.invoke(prompt)
+            response_content = invoke_llm_with_fallback(prompt)
             
-            return response.content
+            return response_content
             
         except Exception as e:
-            logger.error(f"Error in CompanyOverviewAgent: {e}")
-            return f"Error analyzing company overview: {str(e)}"
+            logger.error(f"Error in SynergyAgent: {e}")
+            return f"Error analyzing synergies: {str(e)}"
 
 
 class ProductFitAgent:
@@ -553,9 +650,9 @@ Retrieved Context:
                 context += f"\n\n=== USER PROVIDED REFERENCES ===\n{references}"
             
             prompt = self.PROMPT.format(company_name=company_name, context=context)
-            response = self.llm.invoke(prompt)
+            response_content = invoke_llm_with_fallback(prompt)
             
-            return response.content
+            return response_content
             
         except Exception as e:
             logger.error(f"Error in PricingAgent: {e}")
@@ -646,25 +743,13 @@ Retrieved Context:
                 context += f"\n\n=== USER PROVIDED REFERENCES ===\n{references}"
             
             prompt = self.PROMPT.format(company_name=company_name, context=context)
-            response = self.llm.invoke(prompt)
+            response_content = invoke_llm_with_fallback(prompt)
             
-            return response.content
+            return response_content
             
         except Exception as e:
             logger.error(f"Error in ROIAgent: {e}")
             return f"Error analyzing ROI: {str(e)}"
-        """Analyze ROI and business impact projections"""
-        try:
-            context = self.retriever_tool.invoke({
-                "query": f"company size employees revenue growth hiring recruiting HR costs turnover retention metrics",
-                "company_name": company_name,
-                "include_eightfold": True
-            })
-            
-            prompt = self.PROMPT.format(company_name=company_name, context=context)
-            response = self.llm.invoke(prompt)
-            
-            return response.content
             
         except Exception as e:
             logger.error(f"Error in ROIAgent: {e}")
@@ -776,9 +861,9 @@ Retrieved Context:
                 additional_request=additional_request,
                 context=combined_context
             )
-            response = self.llm.invoke(prompt)
+            response_content = invoke_llm_with_fallback(prompt)
             
-            return response.content
+            return response_content
             
         except Exception as e:
             logger.error(f"Error in AdditionalDataRequestAgent: {e}")
