@@ -17,6 +17,7 @@ from src.vector_store.pinecone_store import vector_store
 from src.agents.deep_agent import main_agent, dashboard
 from src.ingestion.document_processor import DocumentProcessor
 from src.agents.sub_agents import AdditionalDataRequestAgent, PineconeRetrieverTool
+from src.utils.mongodb import initialize_mongodb, get_mongo_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,6 +82,11 @@ app.config['SECRET_KEY'] = config.SECRET_KEY
 CORS(app)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Initialize MongoDB connection
+logger.info(f"Initializing MongoDB: {config.MONGO_DB_URI}")
+if not initialize_mongodb(config.MONGO_DB_URI, config.MONGO_DB_NAME):
+    logger.warning("⚠️ MongoDB connection failed - chat persistence disabled")
 
 # Create separate namespace for progress updates to avoid interference with chat
 progress_namespace = '/progress'
@@ -562,6 +568,17 @@ Respond in JSON format:
 
 @app.route('/')
 def index():
+    """Main page - also cleans up stale 'New Chat' sessions"""
+    try:
+        # Cleanup stale "New Chat" sessions on page load
+        mongo = get_mongo_manager()
+        if mongo:
+            deleted_count = mongo.cleanup_stale_new_chats()
+            if deleted_count > 0:
+                logger.info(f"🧹 Cleaned up {deleted_count} stale chat(s) on page load")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+    
     return render_template('index.html')
 
 @app.route('/api/companies', methods=['GET'])
@@ -727,6 +744,129 @@ def get_session_sources(session_id):
             }), 404
     except Exception as e:
         logger.error(f"Error getting sources: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/chats', methods=['GET'])
+def get_all_chats():
+    """Get all chat sessions from MongoDB"""
+    try:
+        mongo = get_mongo_manager()
+        if not mongo:
+            return jsonify({
+                'success': False,
+                'error': 'MongoDB not available'
+            }), 503
+        
+        chats = mongo.get_all_chats(limit=50)
+        return jsonify({
+            'success': True,
+            'chats': chats
+        })
+    except Exception as e:
+        logger.error(f"Error getting chats: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/chats/<session_id>', methods=['GET'])
+def get_chat(session_id):
+    """Get a specific chat session by session_id"""
+    try:
+        mongo = get_mongo_manager()
+        if not mongo:
+            return jsonify({
+                'success': False,
+                'error': 'MongoDB not available'
+            }), 503
+        
+        chat = mongo.get_chat_session(session_id)
+        if not chat:
+            return jsonify({
+                'success': False,
+                'error': 'Chat not found'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'chat': chat
+        })
+    except Exception as e:
+        logger.error(f"Error getting chat: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/chats/new', methods=['POST'])
+def create_new_chat():
+    """Create a new chat session"""
+    try:
+        import uuid
+        
+        mongo = get_mongo_manager()
+        if not mongo:
+            return jsonify({
+                'success': False,
+                'error': 'MongoDB not available'
+            }), 503
+        
+        # Generate new session ID
+        new_session_id = str(uuid.uuid4())
+        
+        # Create chat in MongoDB
+        chat_id = mongo.create_chat_session(new_session_id, "New Chat")
+        
+        if not chat_id:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to create chat'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'session_id': new_session_id,
+            'chat_id': chat_id
+        })
+    except Exception as e:
+        logger.error(f"Error creating new chat: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/chats/<session_id>', methods=['DELETE'])
+def delete_chat(session_id):
+    """Delete a chat session"""
+    try:
+        mongo = get_mongo_manager()
+        if not mongo:
+            return jsonify({
+                'success': False,
+                'error': 'MongoDB not available'
+            }), 503
+        
+        success = mongo.delete_chat_session(session_id)
+        
+        if not success:
+            return jsonify({
+                'success': False,
+                'error': 'Chat not found or failed to delete'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'message': 'Chat deleted successfully'
+        })
+    except Exception as e:
+        logger.error(f"Error deleting chat: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -998,6 +1138,69 @@ def regenerate_multiple():
 
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def save_message_to_db(session_id: str, role: str, content: str, message_type: str = "text", metadata: dict = None):
+    """
+    Save a message to MongoDB for the current session
+    
+    Args:
+        session_id: Session identifier
+        role: 'user' or 'assistant'
+        content: Message content
+        message_type: Type of message (text, research_acknowledgment, etc.)
+        metadata: Additional metadata
+    """
+    mongo = get_mongo_manager()
+    if not mongo:
+        return
+    
+    try:
+        mongo.add_message(session_id, role, content, message_type, metadata)
+    except Exception as e:
+        logger.error(f"Failed to save message to MongoDB: {e}")
+
+
+def update_chat_company_name(session_id: str, company_name: str):
+    """
+    Update company name for a chat session in MongoDB
+    
+    Args:
+        session_id: Session identifier
+        company_name: Company name to set
+    """
+    mongo = get_mongo_manager()
+    if not mongo:
+        return
+    
+    try:
+        mongo.update_company_name(session_id, company_name)
+        logger.info(f"Updated chat company name to: {company_name}")
+    except Exception as e:
+        logger.error(f"Failed to update chat company name: {e}")
+
+
+def save_research_to_db(session_id: str, research_results: dict):
+    """
+    Save research results to MongoDB for the current session
+    
+    Args:
+        session_id: Session identifier
+        research_results: Complete research data
+    """
+    mongo = get_mongo_manager()
+    if not mongo:
+        return
+    
+    try:
+        mongo.save_research_results(session_id, research_results)
+        logger.info(f"Saved research results to MongoDB for session {session_id}")
+    except Exception as e:
+        logger.error(f"Failed to save research results to MongoDB: {e}")
+
+
+# ============================================================================
 # WEBSOCKET HANDLERS
 # ============================================================================
 
@@ -1016,12 +1219,21 @@ def handle_connect():
         'current_agent': None,
         'conversation_history': [],
         'progress_sid': None,
+        'current_chat_id': None,  # MongoDB document ID for current chat
         'sources_used': {
             'pinecone_eightfold': [],
             'pinecone_target': [],
             'web_scraped': []
         }
     }
+    
+    # Create new chat session in MongoDB
+    mongo = get_mongo_manager()
+    if mongo:
+        chat_id = mongo.create_chat_session(request.sid, "New Chat")
+        if chat_id:
+            active_sessions[request.sid]['current_chat_id'] = chat_id
+            logger.info(f"Created MongoDB chat session: {chat_id}")
     
     # Don't send initial message to chat
     # emit('connection_response', {
@@ -1507,6 +1719,10 @@ def run_research_in_background(session_id, data):
             active_sessions[session_id]['company_name'] = company_name
             active_sessions[session_id]['associated_companies'] = associated_companies
         
+        # Save research results and update company name in MongoDB
+        update_chat_company_name(session_id, company_name)
+        save_research_to_db(session_id, frontend_plan)
+        
     except Exception as e:
         logger.error(f"Research error: {e}")
         import traceback
@@ -1573,6 +1789,9 @@ def handle_chat_message(data):
         'timestamp': datetime.now().isoformat()
     })
     
+    # Save user message to MongoDB
+    save_message_to_db(session_id, 'user', message, 'text')
+    
     try:
         # Use processed message for research requests
         processed_message = classification.get('processed_message', message)
@@ -1589,6 +1808,9 @@ def handle_chat_message(data):
                 'content': response,
                 'timestamp': datetime.now().isoformat()
             })
+            
+            # Save assistant response to MongoDB
+            save_message_to_db(session_id, 'assistant', response, 'casual')
             
             emit('chat_response', {
                 'message': response,
@@ -1659,6 +1881,15 @@ Respond with ONLY the company name, nothing else."""
                 'ack_message': ack_message,  # Store for later
                 'timestamp': datetime.now().isoformat()
             }
+            
+            # Update chat name in MongoDB immediately when company is identified
+            update_chat_company_name(session_id, company_mention)
+            
+            # Emit chat name update to frontend
+            emit('chat_name_updated', {
+                'company_name': company_mention,
+                'session_id': session_id
+            })
             
             # Send flag to show agent selection modal (no chat message)
             emit('chat_response', {
@@ -1755,12 +1986,27 @@ def handle_new_session():
         'conversation_history': [],  # Fresh conversation chain
         'progress_sid': None,
         'api_key_index': 0,  # Reset to first key on new session
+        'current_chat_id': None,
         'sources_used': {
             'pinecone_eightfold': [],
             'pinecone_target': [],
             'web_scraped': []
         }
     }
+    
+    # Create new chat session in MongoDB
+    mongo = get_mongo_manager()
+    if mongo:
+        chat_id = mongo.create_chat_session(session_id, "New Chat")
+        if chat_id:
+            active_sessions[session_id]['current_chat_id'] = chat_id
+            logger.info(f"Created new MongoDB chat session: {chat_id}")
+            
+            # Emit chat name update so frontend refreshes chat list
+            emit('chat_name_updated', {
+                'company_name': 'New Chat',
+                'session_id': session_id
+            })
     
     emit('session_reset', {
         'success': True,
@@ -1805,6 +2051,9 @@ def handle_confirm_agent_selection(data):
         'content': ack_message,
         'timestamp': datetime.now().isoformat()
     })
+    
+    # Save acknowledgment to MongoDB
+    save_message_to_db(session_id, 'assistant', ack_message, 'research_acknowledgment')
     
     # Send ONLY the original acknowledgment chat message
     emit('chat_response', {

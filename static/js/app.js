@@ -11,7 +11,8 @@ const progressScreen = document.getElementById('progressScreen');
 // const viewPlansBtn = document.getElementById('viewPlansBtn'); // Removed from HTML
 const newResearchBtn = document.getElementById('newResearchBtn');
 const backToDashboardBtn = document.getElementById('backToDashboard');
-const newSessionBtn = document.getElementById('newSessionBtn');
+const newChatBtn = document.getElementById('newChatBtn');
+const chatHistory = document.getElementById('chatHistory');
 
 let currentCompany = null;
 let currentAccountPlan = null;
@@ -23,6 +24,9 @@ let researchDone = false;  // Track if research has been completed
 let selectedAgents = ['overview', 'value', 'goals', 'domain', 'synergy']; // Default all selected
 let pendingCompanyName = null; // Store company name for agent selection modal
 let sourcesExpanded = false; // Track expansion state for live sources
+let currentChatId = null; // Track current active chat session
+let chats = []; // Store all chat sessions
+let chatHistoryLoadTimer = null; // Debounce timer for loading chat history
 
 const DEFAULT_FAVICON_DATA_URI = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%238b5cf6"%3E%3Ccircle cx="12" cy="12" r="10"/%3E%3Cpath fill="white" d="M12 6a6 6 0 0 0-6 6h2a4 4 0 0 1 4-4V6z"/%3E%3C/svg%3E';
 
@@ -42,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     setupResizableSidebar();
     showWelcomeScreen();
+    loadChatHistory(); // Load chat history on page load
 });
 
 function setupEventListeners() {
@@ -56,7 +61,7 @@ function setupEventListeners() {
     // if (viewPlansBtn) viewPlansBtn.addEventListener('click', showPlansList);
     if (newResearchBtn) newResearchBtn.addEventListener('click', showWelcomeScreen);
     if (backToDashboardBtn) backToDashboardBtn.addEventListener('click', showDashboard);
-    if (newSessionBtn) newSessionBtn.addEventListener('click', handleNewSession);
+    if (newChatBtn) newChatBtn.addEventListener('click', handleCreateNewChat);
 
     socket.on('connect', () => {
         console.log('Connected to server, socket ID:', socket.id);
@@ -76,6 +81,7 @@ function setupEventListeners() {
     socket.on('chat_response', handleChatResponse);
     socket.on('chat_typing', handleTypingIndicator);
     socket.on('session_reset', handleSessionReset);
+    socket.on('chat_name_updated', handleChatNameUpdated);
     socket.on('research_started', handleResearchStarted);
     socket.on('research_complete', handleResearchComplete);
     socket.on('research_error', handleResearchError);
@@ -298,6 +304,12 @@ function handleSessionReset(data) {
     currentCompany = null;
     currentAccountPlan = null;
     researchInProgress = false;
+    sendBtn.disabled = false;
+    
+    // Clear chat
+    chatMessages.innerHTML = '';
+    
+    // Reset sources
     sourcesData = getEmptySourcesData();
     resetLiveSourcesProgress();
     const scrapingSection = document.getElementById('scrapingProgress');
@@ -306,17 +318,12 @@ function handleSessionReset(data) {
     }
     updateDataStageExtensionVisibility();
     
-    // Clear chat messages
-    chatMessages.innerHTML = '';
-    
-    // Don't add system message - just reset silently
-    // addChatMessage(data.message, 'assistant', 'system');
+    // Don't reload chat history here - it will be loaded by handleChatNameUpdated or on demand
     
     // Show welcome screen
     showWelcomeScreen();
     
     // Enable input
-    sendBtn.disabled = false;
     companyInput.disabled = false;
     companyInput.value = '';
 }
@@ -326,6 +333,17 @@ function handleError(data) {
     addChatMessage(`❌ Error: ${data.message}`, 'assistant', 'error');
     researchInProgress = false;
     sendBtn.disabled = false;
+}
+
+function handleChatNameUpdated(data) {
+    const { company_name, session_id } = data;
+    console.log('Chat name updated:', company_name);
+    
+    // Update current company name
+    currentCompany = company_name;
+    
+    // Reload chat history with debouncing (wait 300ms to batch multiple updates)
+    debouncedLoadChatHistory();
 }
 
 function handleProgressUpdate(data) {
@@ -1782,4 +1800,207 @@ function isElementCurrentlyVisible(element) {
         return element.style.display !== 'none';
     }
     return window.getComputedStyle(element).display !== 'none';
+}
+
+// ============================================================================
+// CHAT PERSISTENCE FUNCTIONS
+// ============================================================================
+
+function debouncedLoadChatHistory() {
+    // Clear any pending timer
+    if (chatHistoryLoadTimer) {
+        clearTimeout(chatHistoryLoadTimer);
+    }
+    
+    // Set new timer to load after 300ms of inactivity
+    chatHistoryLoadTimer = setTimeout(() => {
+        loadChatHistory();
+    }, 300);
+}
+
+async function loadChatHistory() {
+    try {
+        const response = await fetch('/api/chats');
+        const data = await response.json();
+        
+        if (data.success && data.chats) {
+            chats = data.chats;
+            renderChatHistory();
+        }
+    } catch (error) {
+        console.error('Failed to load chat history:', error);
+        chatHistory.innerHTML = '<div class="chat-history-loading">Failed to load chats</div>';
+    }
+}
+
+function renderChatHistory() {
+    if (!chats || chats.length === 0) {
+        chatHistory.innerHTML = '<div class="chat-history-loading">No chats yet</div>';
+        return;
+    }
+    
+    chatHistory.innerHTML = '';
+    
+    chats.forEach(chat => {
+        const chatItem = document.createElement('div');
+        chatItem.className = 'chat-history-item';
+        if (chat.session_id === socket.id) {
+            chatItem.classList.add('active');
+        }
+        
+        const date = new Date(chat.updated_at);
+        const formattedDate = formatChatDate(date);
+        
+        chatItem.innerHTML = `
+            <div class="chat-history-item-content">
+                <div class="chat-history-item-title">${chat.company_name || 'New Chat'}</div>
+                <div class="chat-history-item-date">${formattedDate}</div>
+            </div>
+            <button class="chat-history-item-delete" data-session-id="${chat.session_id}" title="Delete chat">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+            </button>
+        `;
+        
+        chatItem.addEventListener('click', (e) => {
+            if (!e.target.closest('.chat-history-item-delete')) {
+                loadChat(chat.session_id);
+            }
+        });
+        
+        const deleteBtn = chatItem.querySelector('.chat-history-item-delete');
+        deleteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteChat(chat.session_id);
+        });
+        
+        chatHistory.appendChild(chatItem);
+    });
+}
+
+function formatChatDate(date) {
+    const now = new Date();
+    const diff = now - date;
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 7) {
+        return date.toLocaleDateString();
+    } else if (days > 0) {
+        return `${days}d ago`;
+    } else if (hours > 0) {
+        return `${hours}h ago`;
+    } else if (minutes > 0) {
+        return `${minutes}m ago`;
+    } else {
+        return 'Just now';
+    }
+}
+
+async function loadChat(sessionId) {
+    try {
+        const response = await fetch(`/api/chats/${sessionId}`);
+        const data = await response.json();
+        
+        if (data.success && data.chat) {
+            // Clear current chat
+            chatMessages.innerHTML = '';
+            
+            // Load messages
+            const messages = data.chat.messages || [];
+            messages.forEach(msg => {
+                addChatMessage(msg.content, msg.role, msg.type || 'text');
+            });
+            
+            // Update state
+            currentChatId = sessionId;
+            if (data.chat.research_results) {
+                currentAccountPlan = data.chat.research_results;
+                currentCompany = data.chat.company_name;
+                researchDone = data.chat.is_research_complete;
+                
+                // Show dashboard if research is complete
+                if (researchDone) {
+                    showDashboard();
+                    renderDashboard(data.chat.research_results);
+                }
+            }
+            
+            // Update active state in UI
+            document.querySelectorAll('.chat-history-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            const activeItem = Array.from(document.querySelectorAll('.chat-history-item'))
+                .find(item => item.querySelector(`[data-session-id="${sessionId}"]`));
+            if (activeItem) {
+                activeItem.classList.add('active');
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load chat:', error);
+        alert('Failed to load chat');
+    }
+}
+
+async function handleCreateNewChat() {
+    if (!confirm('Are you sure you want to start a new chat? Current research will be cleared.')) {
+        return;
+    }
+    
+    try {
+        // Trigger socket new_session event which handles MongoDB creation
+        socket.emit('new_session');
+        
+        // Clear chat messages immediately
+        chatMessages.innerHTML = '';
+        
+        // Reset state
+        currentCompany = null;
+        currentAccountPlan = null;
+        researchDone = false;
+        researchInProgress = false;
+        
+        showWelcomeScreen();
+        
+        // Chat history will be updated via handleChatNameUpdated event from backend
+    } catch (error) {
+        console.error('Failed to create new chat:', error);
+        alert('Failed to create new chat');
+    }
+}
+
+async function deleteChat(sessionId) {
+    if (!confirm('Are you sure you want to delete this chat?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/chats/${sessionId}`, {
+            method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Reload chat history
+            await loadChatHistory();
+            
+            // If deleted chat was active, create new one
+            if (sessionId === socket.id) {
+                await handleCreateNewChat();
+            }
+        } else {
+            alert('Failed to delete chat');
+        }
+    } catch (error) {
+        console.error('Failed to delete chat:', error);
+        alert('Failed to delete chat');
+    }
+}
+
+function handleNewSession() {
+    handleCreateNewChat();
 }

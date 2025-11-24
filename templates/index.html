@@ -405,34 +405,17 @@
                 <!-- Sources Tab -->
                 <div class="tab-content" id="sourcesTab" style="display: none;">
                     <div class="sources-container">
-                        <h2>Research Sources</h2>
-                        <p class="sources-description">All sources used to generate this account plan</p>
-                        
-                        <!-- Eightfold AI Documents -->
-                        <div class="source-category">
-                            <h3>📚 Eightfold AI Knowledge Base</h3>
-                            <div class="source-list" id="eightfoldSources">
-                                <p class="source-placeholder">No sources available</p>
+                        <div class="sources-header">
+                            <div class="sources-title-section">
+                                <h2>Research Sources</h2>
+                                <p class="sources-description">Web sources used to generate the account plan for <span id="targetCompanyName" class="company-highlight">Target Company</span></p>
                             </div>
+                            <span class="source-count-badge" id="webSourcesCount">0 entries</span>
                         </div>
                         
-                        <!-- Target Company Documents -->
-                        <div class="source-category">
-                            <h3>🏢 <span id="targetCompanyName">Target Company</span> Research</h3>
-                            <div class="source-list" id="targetSources">
-                                <p class="source-placeholder">No sources available</p>
-                            </div>
-                        </div>
-                        
-                        <!-- Web Scraped Sources -->
-                        <div class="source-category web-sources">
-                            <div class="source-category-header">
-                                <h3>🌐 Web Sources</h3>
-                                <span class="source-count-badge" id="webSourcesCount">0 entries</span>
-                            </div>
-                            <div class="source-table-holder" id="webSources">
-                                <p class="source-placeholder">No web sources available</p>
-                            </div>
+                        <!-- Web Scraped Sources Only -->
+                        <div class="source-table-holder" id="webSources">
+                            <p class="source-placeholder">No web sources available</p>
                         </div>
                     </div>
                 </div>

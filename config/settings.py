@@ -43,6 +43,10 @@ class Config:
     # Account plan output settings
     ACCOUNT_PLANS_FOLDER = os.getenv("ACCOUNT_PLANS_FOLDER", str(BASE_DIR / "data" / "account_plans"))
     
+    # MongoDB settings
+    MONGO_DB_URI = os.getenv("MONGO_DB_URI", "mongodb://localhost:27017")
+    MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "company_research_db")
+    
     @classmethod
     def validate(cls):
         if not cls.GOOGLE_API_KEY:
