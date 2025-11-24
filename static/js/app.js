@@ -27,6 +27,7 @@ let sourcesExpanded = false; // Track expansion state for live sources
 let currentChatId = null; // Track current active chat session
 let chats = []; // Store all chat sessions
 let chatHistoryLoadTimer = null; // Debounce timer for loading chat history
+let creatingChat = false; // Prevent duplicate chat creation clicks
 
 const DEFAULT_FAVICON_DATA_URI = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%238b5cf6"%3E%3Ccircle cx="12" cy="12" r="10"/%3E%3Cpath fill="white" d="M12 6a6 6 0 0 0-6 6h2a4 4 0 0 1 4-4V6z"/%3E%3C/svg%3E';
 
@@ -326,6 +327,8 @@ function handleSessionReset(data) {
     // Enable input
     companyInput.disabled = false;
     companyInput.value = '';
+    creatingChat = false;
+    setNewChatButtonState(false);
 }
 
 function handleError(data) {
@@ -333,6 +336,8 @@ function handleError(data) {
     addChatMessage(`❌ Error: ${data.message}`, 'assistant', 'error');
     researchInProgress = false;
     sendBtn.disabled = false;
+    creatingChat = false;
+    setNewChatButtonState(false);
 }
 
 function handleChatNameUpdated(data) {
@@ -344,6 +349,12 @@ function handleChatNameUpdated(data) {
     
     // Reload chat history with debouncing (wait 300ms to batch multiple updates)
     debouncedLoadChatHistory();
+}
+
+function setNewChatButtonState(disabled) {
+    if (!newChatBtn) return;
+    newChatBtn.disabled = disabled;
+    newChatBtn.classList.toggle('is-loading', disabled);
 }
 
 function handleProgressUpdate(data) {
@@ -1819,6 +1830,10 @@ function debouncedLoadChatHistory() {
 }
 
 async function loadChatHistory() {
+    if (!chatHistory) {
+        console.warn('chatHistory element not found; skipping history load');
+        return;
+    }
     try {
         const response = await fetch('/api/chats');
         const data = await response.json();
@@ -1834,6 +1849,10 @@ async function loadChatHistory() {
 }
 
 function renderChatHistory() {
+    if (!chatHistory) {
+        console.warn('chatHistory element not found; cannot render history');
+        return;
+    }
     if (!chats || chats.length === 0) {
         chatHistory.innerHTML = '<div class="chat-history-loading">No chats yet</div>';
         return;
@@ -1903,6 +1922,10 @@ function formatChatDate(date) {
 async function loadChat(sessionId) {
     try {
         const response = await fetch(`/api/chats/${sessionId}`);
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || `Failed with status ${response.status}`);
+        }
         const data = await response.json();
         
         if (data.success && data.chat) {
@@ -1925,7 +1948,7 @@ async function loadChat(sessionId) {
                 // Show dashboard if research is complete
                 if (researchDone) {
                     showDashboard();
-                    renderDashboard(data.chat.research_results);
+                    populateDashboard(data.chat.research_results);
                 }
             }
             
@@ -1941,14 +1964,21 @@ async function loadChat(sessionId) {
         }
     } catch (error) {
         console.error('Failed to load chat:', error);
-        alert('Failed to load chat');
+        alert(`Failed to load chat: ${error.message}`);
     }
 }
 
 async function handleCreateNewChat() {
+    if (creatingChat) {
+        return;
+    }
+    
     if (!confirm('Are you sure you want to start a new chat? Current research will be cleared.')) {
         return;
     }
+    
+    creatingChat = true;
+    setNewChatButtonState(true);
     
     try {
         // Trigger socket new_session event which handles MongoDB creation
@@ -1969,6 +1999,8 @@ async function handleCreateNewChat() {
     } catch (error) {
         console.error('Failed to create new chat:', error);
         alert('Failed to create new chat');
+        creatingChat = false;
+        setNewChatButtonState(false);
     }
 }
 

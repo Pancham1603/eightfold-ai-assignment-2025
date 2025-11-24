@@ -130,6 +130,11 @@ body {
     color: var(--accent-purple);
 }
 
+.btn-new-session.is-loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
 .btn-new-session svg {
     width: 14px;
     height: 14px;

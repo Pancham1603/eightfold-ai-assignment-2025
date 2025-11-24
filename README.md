@@ -56,12 +56,13 @@ Access the dashboard at `http://localhost:5000`.
 
 ## Architecture Notes
 
-> ** For detailed visual diagrams and workflow explanations, see [ARCHITECTURE_DIAGRAMS.md](./ARCHITECTURE_DIAGRAMS.md)**
+> For detailed visual diagrams and workflow explanations, see [ARCHITECTURE_DIAGRAMS.md](./ARCHITECTURE_DIAGRAMS.md)
 
 
 ### High-Level Architecture
 The system follows a **Deep Agent** pattern where a central **Orchestrator** manages a team of **Specialized Sub-Agents**.
 
+>**Checkout [Component Interactions](#component-interactions) diagram**
 
 ### Key Components
 1.  **Deep Agent Orchestrator (`src/agents/deep_agent.py`)**: The brain of the system. It handles user intent, manages data gathering, and coordinates sub-agents.
@@ -81,8 +82,12 @@ The system follows a **Deep Agent** pattern where a central **Orchestrator** man
 
 ### 2. Graph RAG (Retrieval Augmented Generation)
 **Decision**: We implemented a **Knowledge Graph** alongside the Vector Store.
+
+>**Checkout [Multi Company Analysis](#data-flow-with-multi-company-analysis) diagram**
+
 **Reasoning**:
 -   Vector search is great for semantic similarity but struggles with structured relationships (e.g., "Who is the CTO of Company X?").
+-  **Multi-Company Comparative Analysis**: When comparing companies (e.g., "Compare Microsoft's cloud strategy with AWS"), the Knowledge Graph explicitly tracks relationships between entities across different organizations, enabling nuanced competitive analysis that pure vector similarity cannot achieve.
 -   The Knowledge Graph explicitly maps entities (People, Products, Locations) and their relationships, allowing agents to answer complex queries more accurately.
 
 <!-- ### 3. Multi-Key Management
@@ -92,10 +97,41 @@ The system follows a **Deep Agent** pattern where a central **Orchestrator** man
 
 ### 3. Quality-Dependent Scraping
 **Decision**: Scraping is triggered **only** if existing data is insufficient or low quality.
+
+>**Checkout [Quality Algorithm](#data-quality-assessment-algorithm) diagram**
+
 **Reasoning**:
 -   **Efficiency**: Avoids redundant scraping if we already have good data.
 -   **Cost**: Reduces Pinecone Write and API calls.
 -   **Logic**: The system calculates a `quality_score` (0-1) based on the meaningfulness of content. If `docs < 10` OR `quality < 0.6`, it triggers a fresh scrape.
+
+### 4. Parallel Threading with Work Pool
+**Decision**: Implemented `ThreadPoolExecutor` with `max_workers=8` for concurrent agent execution.
+
+**Reasoning**:
+-   **Performance**: Running 8 specialized agents sequentially would take 3-5 minutes. Parallel execution reduces this to 30-60 seconds.
+-   **Resource Optimization**: The work pool manages thread allocation efficiently, preventing resource exhaustion while maximizing throughput.
+-   **Non-blocking**: While agents run in background threads, the main Flask thread remains responsive to emit real-time progress updates via SocketIO.
+-   **Scalability**: The pool size (8 workers) matches the number of core agents, ensuring optimal utilization without over-provisioning.
+
+### 5. Flask + SocketIO Real-Time Architecture
+**Decision**: Built the web interface using Flask with Flask-SocketIO for bidirectional communication.
+
+**Reasoning**:
+-   **Real-Time Progress Updates**: SocketIO enables server-to-client push notifications, allowing users to see live progress as agents complete their analysis (e.g., "Overview Agent: Complete", "Pricing Agent: Running...").
+-   **Asynchronous User Experience**: Users don't face a frozen interface during long-running research tasks. The UI updates dynamically with status messages, completion percentages, and intermediate results.
+-   **Session Persistence**: SocketIO maintains persistent connections, enabling the system to track conversation context across multiple requests within the same research session.
+-   **Lightweight**: Compared to polling-based solutions, SocketIO reduces server load and provides instant updates without client-side request overhead.
+
+### 6. MongoDB for Conversation Persistence
+**Decision**: Integrated MongoDB (optional) for storing chat history and session state.
+
+**Reasoning**:
+-   **Context Retention Across Sessions**: Stores complete conversation history, allowing users to resume research on the same company days later without losing context.
+-   **Audit Trail**: Maintains a log of all research requests, agent outputs, and user interactions for compliance and debugging.
+-   **Scalability**: Unlike in-memory session storage, MongoDB ensures chat history survives server restarts and scales horizontally for multi-user deployments.
+-   **Structured Querying**: Enables features like "Show me all research done on SaaS companies last month" by leveraging MongoDB's flexible query capabilities.
+-   **Optional Deployment**: The system degrades gracefully if MongoDB is unavailable, falling back to in-memory session management for development/testing environments.
 
 
 ## Conversational Quality
@@ -123,6 +159,8 @@ The `process_prompt` method employs an LLM-powered classifier to categorize each
     -   **System Response**: Retrieves session context, identifies relevant sub-agents, executes targeted analysis without re-scraping.
     -   **Example**: After researching Apple, "Tell me more about their competitive landscape" → Invokes only `AdditionalDataRequestAgent` using cached data.
 
+>**Checkout [AdditionalDataRequestAgent](#additionaldatarequest-agent-detailed-flow) diagram**
+
 #### Structured Intent Extraction
 The classification process outputs a structured JSON object:
 ```json
@@ -149,9 +187,29 @@ The `process_prompt` method analyzes every user message to classify the user typ
 -   **Chatty**: "Hey! How are you? I was thinking about..." -> System engages politely but steers back to business.
 -   **Edge Case**: "What is the CTO's favorite food?" -> System politely declines irrelevant/private requests.
 
-### Session State Management
--   The system maintains a session state (Idle, Researching, Complete) to handle context.
--   It remembers the `company_name` and `references` provided in previous turns, allowing for follow-up questions like "Tell me more about their competitors" without restating the company name.
+### Context Retention & Session State Management
+The system implements sophisticated context retention mechanisms to maintain coherent, multi-turn conversations:
+
+#### In-Memory Session State
+-   **Active Session Tracking**: Maintains a session state machine (Idle → Researching → Complete) to handle context awareness.
+-   **Company Context Persistence**: Remembers the `company_name` across conversation turns, enabling follow-up questions like "Tell me more about their competitors" without requiring the user to restate the company name.
+-   **Reference Accumulation**: Stores user-provided references (pasted articles, job descriptions, competitive intel) throughout the conversation, incorporating them into subsequent agent analyses.
+-   **Associated Companies**: Tracks previously mentioned companies for comparative analysis (e.g., "Now compare them with Google" automatically retrieves both Microsoft and Google contexts).
+
+#### MongoDB Conversation Persistence (Optional)
+-   **Long-Term Memory**: Stores complete conversation history in MongoDB, enabling users to resume research sessions after hours or days.
+-   **Cross-Session Context**: Retrieves previous research on the same company to avoid redundant data gathering and provide continuity (e.g., "You researched Tesla last week. Here's updated information...").
+-   **User Preference Learning**: Tracks which agents or sections users regenerate most often, enabling future optimizations.
+-   **Conversation Replay**: Allows users to review past research sessions, compare how their understanding of a company evolved over time.
+
+#### Intelligent Context Injection
+Every agent invocation receives:
+1. **Primary Company Context**: Full vector store data for the target company.
+2. **Comparative Context**: Data for associated companies if doing competitive analysis.
+3. **User-Specific Context**: References, focus areas, and constraints from the current and previous conversations.
+4. **Session History**: Previous agent outputs from the same research session to avoid contradictions and ensure coherence.
+
+This multi-layered context retention ensures the system behaves like a knowledgeable research partner who "remembers" past interactions, rather than treating each query as a standalone request.
 
 
 ## Agentic Behavior
@@ -357,8 +415,12 @@ with ThreadPoolExecutor(max_workers=8) as executor:
 ```
 This allows all sub-agents to research simultaneously, limited only by API rate limits (handled by the key rotation system for local usage).
 
+>**Checkout [Threading Model](#threading-model-with-progress-updates-using-sockets) diagram**
+
 ### Regeneration & Selective Update
 Users can request updates to specific parts of the report. The `agents_to_run` parameter allows the Orchestrator to re-run only specific agents (e.g., `['pricing', 'roi']`) without regenerating the entire report, saving time and tokens.
+
+>**Checkout [Selective Update](#selective-agent-regeneration-flow) diagram**
 
 ### Formatting & Reporting
 The `AccountPlanDashboard` class aggregates the outputs from all agents into a cohesive report. It supports:
@@ -379,3 +441,497 @@ The system is designed to adhere to strict guidelines:
 -   **Low Data**: If a company has a thin digital footprint, the agents acknowledge the limitation rather than hallucinating facts.
 -   **Ambiguity**: If the user says "Apple", the system infers "Apple Inc." but is ready to clarify if the context suggests a different entity.
 -   **Contextual References**: If a user provides a pasted job description or news article ("Reference Info"), the agents incorporate this specific context into their analysis.
+
+# System Architecture - Parallel Execution Flow
+
+## User Input Flow
+
+```
+User Input (Natural Language)
+         │
+         ▼
+┌────────────────────────┐
+│   Flask SocketIO       │
+│   handle_research_     │
+│   company()            │
+└────────┬───────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│  Gemini Prompt         │
+│  Processor             │
+│  process_prompt()      │
+└────────┬───────────────┘
+         │
+         ▼
+    Extract JSON:
+    {
+      company_name,
+      additional_data_requested,
+      references_given,
+      associated_companies
+    }
+         │
+         ▼
+┌────────────────────────────────────────────┐
+│  Data Quality Assessment                   │
+│  has_sufficient_company_data()             │
+│                                            │
+│  For each company:                         │
+│  1. Search vector store                    │
+│  2. Deduplicate documents                  │
+│  3. Sample 5 docs → LLM quality check      │
+│  4. Calculate quality_score (0-1)          │
+│                                            │
+│  Decision Logic:                           │
+│  • doc_count >= 10 AND quality >= 0.6      │
+│    ✓ Use Existing Data (skip scraping)     │
+│  • ELSE                                    │
+│    → Trigger Web Scraping                  │
+└────────┬───────────────────────────────────┘
+         │
+         ▼
+    ┌────┴────┐
+    │ Quality │
+    │ Check   │
+    └────┬────┘
+         │
+    ┌────┴──────────────────────────┐
+    │                               │
+    ▼ Sufficient                    ▼ Insufficient
+┌────────────────┐          ┌──────────────────────┐
+│ Use Existing   │          │  Web Scraping        │
+│ Vector Data    │          │  ├─ DuckDuckGo       │
+│                │          │  ├─ Website Scrape   │
+│ Skip scraping  │          │  └─ Cache Results    │
+└────────┬───────┘          └───────────┬──────────┘
+         │                              │
+         │                              ▼
+         │                  ┌───────────────────────┐
+         │                  │ Add to Vector Store   │
+         │                  │ with metadata         │
+         │                  └───────────┬───────────┘
+         │                              │
+         └──────────┬───────────────────┘
+                    ▼
+┌────────────────────────────────────────┐
+│  Vector Store (Pinecone)               │
+│  + Enhanced Company Data               │
+│  + User Context & References           │
+│  + Knowledge Graph Relationships       │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│         AGENT SELECTION & EXECUTION            │
+│                                                │
+│  Determine agents_to_run:                      │
+│  • Full report: All 8 agents                   │
+│  • Specific query: Selected agents only        │
+│  • Regeneration: User-selected agents          │
+│  • Additional data: AdditionalDataRequest only │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│         PARALLEL AGENT EXECUTION               │
+│  ThreadPoolExecutor (max_workers=8)            │
+│                                                │
+│  Core Analysis Agents (run in parallel):       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ Overview │  │ Product  │  │  Goals   │      │
+│  │  Agent   │  │   Fit    │  │  Agent   │      │
+│  └──────────┘  └──────────┘  └──────────┘      │
+│                                                │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │   Dept   │  │ Synergy  │  │ Pricing  │      │
+│  │ Mapping  │  │  Agent   │  │  Agent   │      │
+│  └──────────┘  └──────────┘  └──────────┘      │
+│                                                │
+│  ┌──────────┐                                  │
+│  │   ROI    │                                  │
+│  │  Agent   │                                  │
+│  └──────────┘                                  │
+│                                                │
+│  Special Agent (conditional):                  │
+│  ┌────────────────────────────────────┐        │
+│  │ AdditionalDataRequest Agent        │        │
+│  │ • Answers follow-up questions      │        │
+│  │ • Handles specific data requests   │        │
+│  │ • Searches existing vector store   │        │
+│  │ • If insufficient → Web search     │        │
+│  │ • Enhances vector store if needed  │        │
+│  └────────────────────────────────────┘        │
+│                                                │
+│  All agents access:                            │
+│  • Pinecone Vector Store (shared context)      │
+│  • User-provided references                    │
+│  • Associated company data                     │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│  Results Aggregation   │
+│  as_completed()        │
+└────────┬───────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│  Dashboard Generation  │
+│  ├─ JSON Format        │
+│  └─ HTML Format        │
+└────────┬───────────────┘
+         │
+         ▼
+┌────────────────────────┐
+│  SocketIO Response     │
+│  research_complete     │
+└────────────────────────┘
+```
+
+## Data Flow with Multi-Company Analysis
+
+```
+User Prompt: "Compare Microsoft with Google on cloud strategies"
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Gemini Extracts:                      │
+│  • Primary: Microsoft                  │
+│  • Associated: [Google]                │
+│  • Additional: Cloud strategies        │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Parallel Data Gathering:              │
+│  ├─ Microsoft (search + scrape)        │
+│  └─ Google (search + scrape)           │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────┐
+│  Pinecone Vector Store:                 │
+│                                         │
+│  [Microsoft]                            │
+│      ├─ Business model docs             │
+│      ├─ Cloud strategy docs             │
+│      └─ Related to: Google              │
+│                                         │
+│  [Google]                               │
+│      ├─ Business model docs             │
+│      ├─ Cloud strategy docs             │
+│      └─ Related to: Microsoft           │
+│                                         │
+│  [Context]                              │
+│      └─ "Focus on cloud strategies"     │
+└────────┬────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Each Agent Receives:                  │
+│  • Microsoft primary data              │
+│  • Google comparison data              │
+│  • "Cloud strategies" focus context    │
+│  • Knowledge graph relationships       │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Agent Outputs Include:                │
+│  • Microsoft analysis                  │
+│  • Comparison with Google              │
+│  • Cloud strategy insights             │ 
+│  • Competitive positioning             │
+└────────────────────────────────────────┘
+```
+
+## Component Interactions
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Flask App (app.py)                    │
+│                                                          │
+│  ┌───────────────────────────────────────────────────┐   │
+│  │  handle_research_company()                        │   │
+│  │  1. Process prompt with Gemini                    │   │
+│  │  2. Gather data for all companies                 │   │
+│  │  3. Trigger parallel agents                       │   │
+│  │  4. Stream progress updates                       │   │
+│  │  5. Return results                                │   │
+│  └──────────────┬────────────────────────────────────┘   │
+└─────────────────┼────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│          DeepAgent Orchestrator (deep_agent.py)         │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  process_prompt()                                │   │
+│  │  └─► Gemini LLM ─► Extract structured JSON       │   │
+│  └──────────────────────────────────────────────────┘   │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  gather_company_data()                           │   │
+│  │  └─► DuckDuckGo Search ─► Scraper ─► Pinecone    │   │
+│  └──────────────────────────────────────────────────┘   │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  generate_account_plan(parallel=True)            │   │
+│  │  └─► ThreadPoolExecutor ─► Selected agents in || │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌──────────────────────────────────────────────────────────┐
+│              Specialized Agents (sub_agents.py)          │
+│                                                          │
+│  Each agent:                                             │
+│  • Retrieves context from Pinecone                       │
+│  • Uses Gemini for analysis                              │
+│  • Returns specialized insights                          │
+│                                                          │
+│  Agents run CONCURRENTLY via ThreadPoolExecutor          │
+└─────────────────┬────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│         Supporting Services (External/Storage)          │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
+│  │ Pinecone │  │  Gemini  │  │  DDGS    │               │
+│  │  Vector  │  │   LLM    │  │  Search  │               │
+│  │  Store   │  │          │  │          │               │
+│  └──────────┘  └──────────┘  └──────────┘               │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Threading Model with Progress Updates using Sockets
+
+```
+Main Thread (Flask-SocketIO)
+    │
+    └─► handle_research_company()
+            │
+            ├─► Emit: progress_update (prompt_processing)
+            │
+            ├─► process_prompt() [Main Thread]
+            │
+            ├─► Emit: progress_update (data_gathering)
+            │
+            ├─► gather_company_data() [Main Thread]
+            │
+            ├─► Emit: progress_update (agents_starting)
+            │
+            └─► ThreadPoolExecutor.submit() [Creates Worker Threads]
+                    │
+                    ├─► Worker Thread 1: Overview Agent
+                    ├─► Worker Thread 2: Product Fit Agent
+                    ├─► Worker Thread 3: Goals Agent
+                    ├─► Worker Thread 4: Dept Mapping Agent
+                    └─► Worker Thread 5: Synergy Agent
+                            │
+                            │ (Each thread independently)
+                            ├─► Query Pinecone
+                            ├─► Call Gemini API
+                            ├─► Process results
+                            └─► Return to main thread
+                                    │
+                                    ▼
+                    as_completed() collects results
+                            │
+                            ▼
+                    Emit: progress_update (per agent)
+                            │
+                            ▼
+                    Emit: research_complete
+```
+
+
+## Selective Agent Regeneration Flow
+
+```
+User Request: "Update the pricing and ROI sections"
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Parse Regeneration Request            │
+│  • Identify agents to re-run           │
+│  • Keep existing results for others    │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Agent Selection:                      │
+│  agents_to_run = ['pricing', 'roi']    │
+│                                        │
+│  Skip: overview, product_fit, goals,   │
+│        dept_mapping, synergy           │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Parallel Execution (2 agents only)    │
+│  ┌──────────┐  ┌──────────┐            │
+│  │ Pricing  │  │   ROI    │            │
+│  │  Agent   │  │  Agent   │            │
+│  └──────────┘  └──────────┘            │
+└────────┬───────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────┐
+│  Merge Results:                        │
+│  • Keep old: overview, product_fit...  │
+│  • Update: pricing, roi                │
+│  • Generate updated report             │
+└────────────────────────────────────────┘
+
+Benefits:
+• Faster updates (only re-run needed agents)
+• Token/cost savings
+• Preserves quality of unchanged sections
+```
+
+## AdditionalDataRequest Agent Detailed Flow
+
+```
+User: "What's their employee retention rate?"
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│  AdditionalDataRequest Agent Invoked           │
+│  Input:                                        │
+│  • company_name: "Microsoft"                   │
+│  • additional_data_requested: "employee        │
+│    retention rate"                             │
+│  • references: [user context]                  │
+│  • associated_companies: [comparison targets]  │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│  STEP 1: Search Existing Vector Store          │
+│  Query: "Microsoft employee retention rate"    │
+│                                                │
+│  ┌──────────────────────────────────────┐      │
+│  │ Pinecone Retriever Tool              │      │
+│  │ • Semantic search                    │      │
+│  │ • Filter by company_name             │      │
+│  │ • Return top 5 docs                  │      │
+│  └──────────────────────────────────────┘      │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+    ┌────┴────┐
+    │ Quality │
+    │ Check   │
+    └────┬────┘
+         │
+    ┌────┴───────────────────────┐
+    │                            │
+    ▼ Sufficient                 ▼ Insufficient
+┌────────────────┐      ┌──────────────────────────┐
+│ STEP 2A:       │      │ STEP 2B:                 │
+│ Answer from    │      │ Web Search Enhancement   │
+│ Existing Data  │      │                          │
+│                │      │ ┌────────────────────┐   │
+│ • Extract info │      │ │ DuckDuckGo Search  │   │
+│ • Synthesize   │      │ │ Query: "Microsoft  │   │
+│   with LLM     │      │ │ employee retention │   │
+│ • Return answer│      │ │ rate statistics"   │   │
+│                │      │ └─────────┬──────────┘   │
+└────────┬───────┘      │           │              │
+         │              │           ▼              │
+         │              │ ┌────────────────────┐   │
+         │              │ │ Scrape Results     │   │
+         │              │ │ • Filter relevant  │   │
+         │              │ │ • Extract data     │   │
+         │              │ └─────────┬──────────┘   │
+         │              │           │              │
+         │              │           ▼              │
+         │              │ ┌────────────────────┐   │
+         │              │ │ Add to Vector      │   │
+         │              │ │ Store (enhance)    │   │
+         │              │ └─────────┬──────────┘   │
+         │              │           │              │
+         │              │           ▼              │
+         │              │ ┌────────────────────┐   │
+         │              │ │ Generate Answer    │   │
+         │              │ │ with new data      │   │
+         │              │ └─────────┬──────────┘   │
+         │              └───────────┼──────────────┘
+         │                          │
+         └──────────┬───────────────┘
+                    ▼
+┌────────────────────────────────────────┐
+│  STEP 3: Return Comprehensive Answer   │
+│  • Direct answer to user's question    │
+│  • Source citations                    │
+│  • Note if data was enhanced           │
+└────────────────────────────────────────┘
+
+Key Features:
+• Intelligent data sufficiency assessment
+• Automatic vector store enhancement
+• Seamless fallback to web search
+• Preserves data for future queries
+```
+
+## Data Quality Assessment Algorithm
+
+```
+┌────────────────────────────────────────────────┐
+│  has_sufficient_company_data(company_name)     │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│  Search Vector Store                           │
+│  • Query: "[company] overview", "products",    │
+│          "business model"                      │
+│  • Filter: company_name                        │
+│  • Collect all matching documents              │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│  Deduplicate Documents                         │
+│  • Hash first 200 chars of content             │
+│  • Remove duplicate hashes                     │
+│  • Count unique documents                      │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│  Quality Assessment (LLM-based)                │
+│  • Sample up to 5 documents                    │
+│  • For each doc, ask Gemini:                   │
+│    "Does this contain meaningful business      │
+│     information about [company]?"              │
+│  • Responses: TRUE or FALSE                    │
+│  • Calculate: quality_score = (TRUE_count /    │
+│                                total_sampled)  │
+└────────┬───────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────┐
+│  Decision Matrix                               │
+│                                                │
+│  IF doc_count >= 10 AND quality_score >= 0.6:  │
+│    ✓ has_data = True                           │
+│    ✓ should_scrape = False                     │
+│    → Use existing data                         │
+│                                                │
+│  ELSE:                                         │
+│    ✗ has_data = False                          │
+│    ✗ should_scrape = True                      │
+│    → Trigger web scraping                      │
+│                                                │
+│  Return: {has_data, doc_count, quality_score,  │
+│          should_scrape}                        │
+└────────────────────────────────────────────────┘
+
+Quality Criteria (LLM evaluates):
+✓ Meaningful: Specific products, services, financials, news
+✗ Low Quality: "Under construction", generic text, errors
+```

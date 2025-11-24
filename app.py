@@ -568,17 +568,6 @@ Respond in JSON format:
 
 @app.route('/')
 def index():
-    """Main page - also cleans up stale 'New Chat' sessions"""
-    try:
-        # Cleanup stale "New Chat" sessions on page load
-        mongo = get_mongo_manager()
-        if mongo:
-            deleted_count = mongo.cleanup_stale_new_chats()
-            if deleted_count > 0:
-                logger.info(f"🧹 Cleaned up {deleted_count} stale chat(s) on page load")
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-    
     return render_template('index.html')
 
 @app.route('/api/companies', methods=['GET'])
@@ -1226,14 +1215,6 @@ def handle_connect():
             'web_scraped': []
         }
     }
-    
-    # Create new chat session in MongoDB
-    mongo = get_mongo_manager()
-    if mongo:
-        chat_id = mongo.create_chat_session(request.sid, "New Chat")
-        if chat_id:
-            active_sessions[request.sid]['current_chat_id'] = chat_id
-            logger.info(f"Created MongoDB chat session: {chat_id}")
     
     # Don't send initial message to chat
     # emit('connection_response', {
@@ -1997,6 +1978,10 @@ def handle_new_session():
     # Create new chat session in MongoDB
     mongo = get_mongo_manager()
     if mongo:
+        # Remove stale placeholder chats tied to this session before creating a new one
+        mongo.delete_placeholder_chats_for_session(session_id)
+        mongo.cleanup_stale_new_chats(max_age_minutes=60, exclude_session_id=session_id)
+        
         chat_id = mongo.create_chat_session(session_id, "New Chat")
         if chat_id:
             active_sessions[session_id]['current_chat_id'] = chat_id
@@ -2011,7 +1996,8 @@ def handle_new_session():
     emit('session_reset', {
         'success': True,
         'message': '🔄 Session reset. Ready for new research!',
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'session_id': session_id
     })
     
     # Don't send chat message - just reset silently

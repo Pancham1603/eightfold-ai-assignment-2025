@@ -5,7 +5,7 @@ Handles all database operations for chat persistence
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from pymongo import MongoClient, DESCENDING
 from pymongo.errors import ConnectionFailure, OperationFailure
@@ -292,33 +292,48 @@ class MongoDBManager:
             logger.error(f"❌ Failed to check session existence: {e}")
             return False
     
-    def cleanup_stale_new_chats(self, current_session_id: str = None) -> int:
+    def cleanup_stale_new_chats(self, max_age_minutes: int = 30, exclude_session_id: str = None) -> int:
         """
-        Delete all chat sessions with name 'New Chat' except the current one
+        Delete placeholder chat sessions (named 'New Chat') older than the threshold
         
         Args:
-            current_session_id: Session ID to exclude from deletion (keep current session)
-            
-        Returns:
-            Number of chats deleted
+            max_age_minutes: Age threshold for stale chats
+            exclude_session_id: Session ID to exclude from deletion
         """
         try:
-            # Build query: company_name is "New Chat" and session_id is NOT current
-            query = {'is_research_complete': False}
+            threshold = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+            query = {
+                'company_name': 'New Chat',
+                'updated_at': {'$lt': threshold}
+            }
             
-            if current_session_id:
-                query['session_id'] = {'$ne': current_session_id}
+            if exclude_session_id:
+                query['session_id'] = {'$ne': exclude_session_id}
             
             result = self.chats_collection.delete_many(query)
             deleted_count = result.deleted_count
             
             if deleted_count > 0:
-                logger.info(f"✅ Cleaned up {deleted_count} stale 'New Chat' sessions")
+                logger.info(f"✅ Cleaned up {deleted_count} stale 'New Chat' sessions older than {max_age_minutes} minutes")
             
             return deleted_count
             
         except Exception as e:
             logger.error(f"❌ Failed to cleanup stale chats: {e}")
+            return 0
+
+    def delete_placeholder_chats_for_session(self, session_id: str) -> int:
+        """Remove placeholder 'New Chat' documents for the given session"""
+        try:
+            result = self.chats_collection.delete_many({
+                'session_id': session_id,
+                'company_name': 'New Chat'
+            })
+            if result.deleted_count > 0:
+                logger.info(f"🧹 Removed {result.deleted_count} placeholder chats for session {session_id}")
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"❌ Failed to delete placeholder chats: {e}")
             return 0
 
 
