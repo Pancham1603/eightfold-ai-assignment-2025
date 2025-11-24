@@ -1,5 +1,5 @@
 # Company Research Assistant AI Agent
-
+Submission by Pancham Agarwal - pancham1603@gmail.com
 ## Overview
 This project is a sophisticated **Company Research Assistant** built as an autonomous AI agent. It leverages a **Deep Agent Architecture** to orchestrate multiple specialized sub-agents, enabling comprehensive research, analysis, and account planning for target companies. The system is designed to help sales and strategy teams by automatically gathering data, analyzing fit, and generating detailed account plans.
 
