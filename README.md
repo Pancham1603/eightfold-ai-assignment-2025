@@ -109,10 +109,9 @@ The system follows a **Deep Agent** pattern where a central **Orchestrator** man
 **Decision**: Implemented `ThreadPoolExecutor` with `max_workers=8` for concurrent agent execution.
 
 **Reasoning**:
--   **Performance**: Running 8 specialized agents sequentially would take 3-5 minutes. Parallel execution reduces this to 30-60 seconds.
+-   **Performance**: Running multiple specialized agents sequentially would take 3-5 minutes. Parallel execution reduces this to 30-60 seconds.
 -   **Resource Optimization**: The work pool manages thread allocation efficiently, preventing resource exhaustion while maximizing throughput.
 -   **Non-blocking**: While agents run in background threads, the main Flask thread remains responsive to emit real-time progress updates via SocketIO.
--   **Scalability**: The pool size (8 workers) matches the number of core agents, ensuring optimal utilization without over-provisioning.
 
 ### 5. Flask + SocketIO Real-Time Architecture
 **Decision**: Built the web interface using Flask with Flask-SocketIO for bidirectional communication.
