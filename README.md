@@ -1,9 +1,20 @@
 # Company Research Assistant AI Agent
 
-## 📋 Overview
+## Overview
 This project is a sophisticated **Company Research Assistant** built as an autonomous AI agent. It leverages a **Deep Agent Architecture** to orchestrate multiple specialized sub-agents, enabling comprehensive research, analysis, and account planning for target companies. The system is designed to help sales and strategy teams by automatically gathering data, analyzing fit, and generating detailed account plans.
 
-## 🚀 Setup Instructions
+## Table of Contents
+- [Overview](#overview)
+- [Setup Instructions](#setup-instructions)
+- [Architecture Notes](#architecture-notes)
+- [Design Decisions](#design-decisions)
+- [Conversational Quality](#️-conversational-quality)
+- [Agentic Behavior](#agentic-behavior)
+- [Technical Implementation](#technical-implementation)
+- [Intelligence & Adaptability](#intelligence--adaptability)
+
+
+## Setup Instructions
 
 ### Prerequisites
 - Python 3.10+
@@ -43,44 +54,14 @@ Access the dashboard at `http://localhost:5000`.
 
 
 
-## 🏗️ Architecture Notes
+## Architecture Notes
+
+> ** For detailed visual diagrams and workflow explanations, see [ARCHITECTURE_DIAGRAMS.md](./ARCHITECTURE_DIAGRAMS.md)**
+
 
 ### High-Level Architecture
 The system follows a **Deep Agent** pattern where a central **Orchestrator** manages a team of **Specialized Sub-Agents**.
 
-```mermaid
-graph TD
-    User[User / Client] -->|Prompt| API[Flask API / SocketIO]
-    API -->|Request| Orchestrator[Deep Agent Orchestrator]
-    
-    subgraph "Intelligence Layer"
-        Orchestrator -->|Analyze Intent| Intent[Intent Classifier]
-        Orchestrator -->|Delegate| SubAgents[Sub-Agents]
-        
-        subgraph "Specialized Sub-Agents"
-            SA1[Overview Agent]
-            SA2[Product Fit Agent]
-            SA3[Goals Agent]
-            SA4[Dept Mapping Agent]
-            SA5[Synergy Agent]
-            SA6[Pricing Agent]
-            SA7[ROI Agent]
-            SA8[Additional Data Agent]
-        end
-    end
-    
-    subgraph "Data Layer"
-        Orchestrator -->|Check Data| VectorStore[Pinecone Graph RAG]
-        VectorStore <-->|Retrieve| KnowledgeGraph[Knowledge Graph]
-        Orchestrator -->|Scrape if needed| Scraper[Web Scraper]
-        Scraper -->|Store| VectorStore
-    end
-    
-    SubAgents -->|Context| VectorStore
-    SubAgents -->|Result| Orchestrator
-    Orchestrator -->|Compile| Dashboard[Account Plan Dashboard]
-    Dashboard -->|Response| User
-```
 
 ### Key Components
 1.  **Deep Agent Orchestrator (`src/agents/deep_agent.py`)**: The brain of the system. It handles user intent, manages data gathering, and coordinates sub-agents.
@@ -89,7 +70,7 @@ graph TD
 4.  **Smart Web Scraper (`src/tools/web_scraper.py`)**: An intelligent scraper that caches results, logs activity, and respects site policies.
 
 
-## 💡 Design Decisions
+## Design Decisions
 
 ### 1. Deep Agent vs. Single Chain
 **Decision**: We chose a **Deep Agent** architecture over a single monolithic LLM chain.
@@ -117,7 +98,7 @@ graph TD
 -   **Logic**: The system calculates a `quality_score` (0-1) based on the meaningfulness of content. If `docs < 10` OR `quality < 0.6`, it triggers a fresh scrape.
 
 
-## 🗣️ Conversational Quality
+## Conversational Quality
 
 Ensuring a high-quality conversational experience was a priority. We addressed this through:
 
