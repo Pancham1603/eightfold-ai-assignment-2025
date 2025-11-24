@@ -8,6 +8,26 @@ This project is a sophisticated **Company Research Assistant** built as an auton
   <img src="https://img.youtube.com/vi/HmUaDxedRo0/maxresdefault.jpg" width="400" />
 </a>
 
+### Screenshots
+<table>
+  <tr>
+    <td align="center">
+        <img src="/screenshots/1.png" alt="1" width="500" />
+    </td>
+    <td align="center">
+        <img src="/screenshots/2.png" alt="2" width="500" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+        <img src="/screenshots/3.png" alt="3" width="500" />
+    </td>
+    <td align="center">
+        <img src="/screenshots/4.jpg" alt="4" width="500" />
+    </td>
+  </tr>
+</table>
+
 
 ## Table of Contents
 - [Overview](#overview)
